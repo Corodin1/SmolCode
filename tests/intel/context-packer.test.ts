@@ -159,10 +159,14 @@ describe('KV-cache context packer & error digest', () => {
       nonToolFallbackGuide: guide,
       skillCatalog: '- smolcode-testing [repo]: Run Vitest tests cleanly',
     });
+    expect(zoneA.systemPrompt).toContain('Prefer <file_write path=');
     expect(zoneA.systemPrompt).toContain('Prefer patch_hashline');
     expect(zoneA.systemPrompt).toContain('<tool_call>');
     expect(zoneA.systemPrompt).toContain('Available Skills');
     expect(zoneA.systemPrompt).toContain('smolcode-testing [repo]');
     expect(zoneA.systemPrompt).toContain('save_skill');
+    if (process.platform === 'win32') {
+      expect(zoneA.systemPrompt).toContain('cmd.exe');
+    }
   });
 });

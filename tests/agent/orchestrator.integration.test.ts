@@ -1050,4 +1050,300 @@ describe('4-Stage AgentOrchestrator integration (mock Ollama server)', () => {
     orch.dispose();
     store.close();
   });
+
+  it('executes raw <file_write> and <replace_symbol> pastes and finalizes parallel batch logs on LoopGuard halt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-paste-orch-'));
+    const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-paste-blobs-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src/helper.ts'),
+      'export function calc(x: number) {\n  return x + 1;\n}\n',
+      'utf8',
+    );
+
+    let chatCallIdx = 0;
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/show') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: ['tools'] }));
+        return;
+      }
+      if (req.url === '/api/chat') {
+        req.on('data', () => {});
+        req.on('end', () => {
+          chatCallIdx += 1;
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+
+          if (chatCallIdx === 1) {
+            // Turn 1 Step 1: stream raw <file_write> + <replace_symbol> in prose
+            const payload =
+              'Applying changes.\n<file_write path="src/extra.ts">\nexport const factor = 2;\n</file_write>\n<replace_symbol path="src/helper.ts" symbol="calc">\nexport function calc(x: number) {\n  return x * 2;\n}\n</replace_symbol>\nAll written.';
+            res.write(
+              JSON.stringify({ message: { role: 'assistant', content: payload }, done: false }) + '\n',
+            );
+          } else if (chatCallIdx === 2) {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [
+                    { function: { name: 'finish_turn', arguments: { summary: 'Applied raw code pastes cleanly.' } } },
+                  ],
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else if (chatCallIdx === 3 || chatCallIdx === 4) {
+            // Turn 2: repeat identical read_range 3x across 2 steps (2x in step 1 + 1x in step 2)
+            // with another read_range after it in the same parallel batch to verify zero 'running' orphans
+            const calls =
+              chatCallIdx === 3
+                ? [
+                    { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
+                    { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
+                  ]
+                : [
+                    { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
+                    { function: { name: 'read_range', arguments: { filePath: 'src/extra.ts', startLine: 1, endLine: 1 } } },
+                  ];
+            res.write(
+              JSON.stringify({
+                message: { role: 'assistant', content: '', tool_calls: calls },
+                done: false,
+              }) + '\n',
+            );
+          } else {
+            res.write(
+              JSON.stringify({ message: { role: 'assistant', content: 'Done.' }, done: false }) + '\n',
+            );
+          }
+
+          res.write(
+            JSON.stringify({
+              done: true,
+              prompt_eval_count: 100,
+              prompt_eval_duration: 10_000_000,
+              eval_count: 20,
+              eval_duration: 20_000_000,
+            }) + '\n',
+          );
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(blobDir, { recursive: true, force: true }),
+    );
+
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'qwen3.5:9b',
+      defaultFastModel: 'qwen3.5:9b',
+    });
+    const snapshots = new SnapshotManager(store, blobDir);
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      snapshots,
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+
+    const proj = store.upsertProject({ name: 'paste-orch', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'New thread',
+      interactionMode: 'build',
+      mainModel: 'qwen3.5:9b',
+      fastModel: 'qwen3.5:9b',
+      effort: 'low',
+      approvalPolicy: 'auto',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    const streamedDeltas: string[] = [];
+    const unsub = orch.subscribe((ev) => {
+      if (ev.type === 'content_delta') streamedDeltas.push(ev.delta);
+    });
+
+    await orch.runUserTurn({ threadId: thread.id, content: 'Create extra and update helper' });
+    unsub();
+
+    expect(readFileSync(join(dir, 'src/extra.ts'), 'utf8')).toBe('export const factor = 2;\n');
+    expect(readFileSync(join(dir, 'src/helper.ts'), 'utf8')).toContain('return x * 2;');
+    // Raw code tags must NOT leak into live streamed prose
+    expect(streamedDeltas.join('')).not.toContain('export const factor = 2');
+    expect(streamedDeltas.join('')).toContain('Applying changes.');
+
+    // Turn 2: parallel batch LoopGuard halt leaves zero toolCalls stuck in 'running'
+    await orch.runUserTurn({ threadId: thread.id, content: 'Loop read test' });
+    const turns = store.listTurns(thread.id);
+    const lastAssistant = turns[turns.length - 1];
+    expect(lastAssistant.content).toContain('Stopped repeated identical call to "read_range"');
+    expect((lastAssistant.toolCalls ?? []).some((t) => t.status === 'running')).toBe(false);
+
+    orch.dispose();
+    store.close();
+  });
+
+  it('normalizes patch_hashline single-object startLine/endLine/newContent and old_text/new_text fallbacks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-alias-orch-'));
+    const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-alias-blobs-'));
+    writeFileSync(join(dir, 'main.py'), 'def a():\n    return 1\n\ndef b():\n    return 2\n', 'utf8');
+
+    let step = 0;
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/show') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: ['tools'] }));
+        return;
+      }
+      if (req.url === '/api/chat') {
+        req.on('data', () => {});
+        req.on('end', () => {
+          step += 1;
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          if (step === 1) {
+            // Single object `edits` using startLine/endLine/newContent aliases
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [
+                    {
+                      function: {
+                        name: 'patch_hashline',
+                        arguments: {
+                          path: 'main.py',
+                          edits: {
+                            op: 'replace_range',
+                            startLine: 2,
+                            endLine: 2,
+                            newContent: '    return 10',
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else if (step === 2) {
+            // patch_hashline called with snake_case old_text / new_text instead of edits
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [
+                    {
+                      function: {
+                        name: 'patch_hashline',
+                        arguments: {
+                          filePath: 'main.py',
+                          old_text: '    return 2',
+                          new_text: '    return 20',
+                        },
+                      },
+                    },
+                  ],
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [{ function: { name: 'finish_turn', arguments: { summary: 'Updated main.py.' } } }],
+                },
+                done: false,
+              }) + '\n',
+            );
+          }
+          res.write(
+            JSON.stringify({
+              done: true,
+              prompt_eval_count: 80,
+              prompt_eval_duration: 10_000_000,
+              eval_count: 15,
+              eval_duration: 15_000_000,
+            }) + '\n',
+          );
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(blobDir, { recursive: true, force: true }),
+    );
+
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'qwen3.5:9b',
+      defaultFastModel: 'qwen3.5:9b',
+    });
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      new SnapshotManager(store, blobDir),
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+    const proj = store.upsertProject({ name: 'alias-orch', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'New thread',
+      interactionMode: 'build',
+      mainModel: 'qwen3.5:9b',
+      fastModel: 'qwen3.5:9b',
+      effort: 'low',
+      approvalPolicy: 'auto',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    await orch.runUserTurn({ threadId: thread.id, content: 'Update main.py' });
+    const finalText = readFileSync(join(dir, 'main.py'), 'utf8');
+    expect(finalText).toContain('return 10');
+    expect(finalText).toContain('return 20');
+
+    orch.dispose();
+    store.close();
+  });
 });

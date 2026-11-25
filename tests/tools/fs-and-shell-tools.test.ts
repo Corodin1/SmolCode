@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { RepoIndexer } from '../../electron/intel/repo-indexer';
 import { TreeSitterService } from '../../electron/intel/tree-sitter-service';
 import {
+  extractCodePasteBlocks,
+  StreamingCodeTagFilter,
+} from '../../electron/tools/code-paste';
+import {
+  normalizeHashlineEdits,
   resolveInsideWorkdir,
   runCreateFile,
   runDeleteFile,
@@ -14,6 +19,9 @@ import {
   runPatchFile,
   runReadRange,
   runReadSymbol,
+  runReplaceLineRange,
+  runReplaceSymbolPaste,
+  runWriteFilePaste,
 } from '../../electron/tools/fs-tools';
 import { commandNeedsApproval, executeSandboxedCommand } from '../../electron/tools/shell-tools';
 import { MUTATING_TOOLS, READ_ONLY_TOOLS } from '../../electron/tools/tool-registry';
@@ -201,6 +209,131 @@ describe('Workspace FS tools, hashline anchors, and streaming shell', () => {
       allowOutsideRoot: true,
     });
     expect(patched.ok).toBe(true);
+    expect(patched.output).toContain('Updated lines');
+    expect(patched.output).toMatch(/1:[0-9a-z]{2}\| updated outside/);
     expect(readFileSync(extFile, 'utf8')).toBe('updated outside\n');
+  });
+
+  it('extracts, filters, guards, and applies raw code-paste blocks (<file_write>, <replace_symbol>, <replace_range>)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-paste-'));
+    cleanDirs.push(dir);
+    const ts = new TreeSitterService();
+
+    // Streaming filter hides raw code body from prose while emitting tag events
+    const streamedProse: string[] = [];
+    const startedTags: string[] = [];
+    const filter = new StreamingCodeTagFilter(
+      (delta) => streamedProse.push(delta),
+      (info) => startedTags.push(`${info.kind}:${info.filePath}`),
+    );
+    const fullReply =
+      'Updating file now.\n<file_write path="app.py">\n```python\ndef greet():\n    return "hi"\n```\n</file_write>\nDone.';
+    for (let i = 0; i < fullReply.length; i += 7) {
+      filter.push(fullReply.slice(i, i + 7));
+    }
+    filter.flush();
+    expect(startedTags).toEqual(['file_write:app.py']);
+    expect(streamedProse.join('')).toBe('Updating file now.\n\nDone.');
+
+    // Extractor unwraps optional fenced block & detects truncated unclosed tags
+    const extracted = extractCodePasteBlocks(fullReply);
+    expect(extracted.blocks).toHaveLength(1);
+    expect(extracted.blocks[0].content).toBe('def greet():\n    return "hi"');
+
+    const truncated = extractCodePasteBlocks('<file_write path="app.py">\ndef broken():\n');
+    expect(truncated.blocks[0].truncationError).toContain('Truncated <file_write>');
+
+    // Write file via runWriteFilePaste, then update symbol & range cleanly
+    const written = await runWriteFilePaste({
+      workdir: dir,
+      filePath: 'app.py',
+      content: extracted.blocks[0].content,
+      treeSitter: ts,
+      readOnly: false,
+    });
+    expect(written.ok).toBe(true);
+    expect(readFileSync(join(dir, 'app.py'), 'utf8')).toBe('def greet():\n    return "hi"\n');
+
+    const indexer = new RepoIndexer(ts);
+    const idx = await indexer.buildIndex('p-paste', dir);
+    const symReplaced = await runReplaceSymbolPaste({
+      workdir: dir,
+      index: idx,
+      indexer,
+      filePath: 'app.py',
+      symbolName: 'greet',
+      content: 'def greet(name="world"):\n    return f"hi {name}"',
+      treeSitter: ts,
+      readOnly: false,
+    });
+    expect(symReplaced.ok).toBe(true);
+    expect(symReplaced.output).toContain('Updated lines');
+    expect(readFileSync(join(dir, 'app.py'), 'utf8')).toContain('name="world"');
+
+    const rangeReplaced = await runReplaceLineRange({
+      workdir: dir,
+      filePath: 'app.py',
+      startLine: 2,
+      endLine: 2,
+      content: '    return f"hello {name}"',
+      treeSitter: ts,
+      readOnly: false,
+    });
+    expect(rangeReplaced.ok).toBe(true);
+    expect(readFileSync(join(dir, 'app.py'), 'utf8')).toContain('hello {name}');
+
+    // Placeholder omission & shrink guards reject unsafe overwrites
+    await expect(
+      runWriteFilePaste({
+        workdir: dir,
+        filePath: 'app.py',
+        content: '# ... existing code ...\ndef other():\n    pass\n',
+        treeSitter: ts,
+        readOnly: false,
+      }),
+    ).rejects.toThrow(/placeholder/i);
+
+    writeFileSync(
+      join(dir, 'big.py'),
+      Array.from({ length: 60 }, (_, i) => `x_${i} = ${i}`).join('\n') + '\n',
+      'utf8',
+    );
+    await expect(
+      runWriteFilePaste({
+        workdir: dir,
+        filePath: 'big.py',
+        content: 'x_0 = 0\n',
+        treeSitter: ts,
+        readOnly: false,
+      }),
+    ).rejects.toThrow(/shrinks the file/i);
+  });
+
+  it('normalizes startLine/endLine/range/newContent aliases, guards NaN read_range, and adds Windows cmd.exe hint', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-norm-'));
+    cleanDirs.push(dir);
+    writeFileSync(join(dir, 'app.py'), 'a = 1\nb = 2\nc = 3\n', 'utf8');
+
+    const normalized = normalizeHashlineEdits([
+      { op: 'replace_range', startLine: 2, endLine: 3, newContent: 'b = 20\nc = 30' },
+      { range: 'L1-L2', text: 'a = 10\nb = 20' },
+    ]);
+    expect(normalized).toEqual([
+      { op: 'replace_range', startAnchor: '2', endAnchor: '3', content: 'b = 20\nc = 30' },
+      { op: 'replace_range', startAnchor: '1', endAnchor: '2', content: 'a = 10\nb = 20' },
+    ]);
+
+    const nanSlice = runReadRange(dir, 'app.py', Number.NaN, Number.NaN);
+    expect(nanSlice.output).toContain('1:');
+    expect(nanSlice.output).toContain('a = 1');
+
+    if (process.platform === 'win32') {
+      const cmdRes = await executeSandboxedCommand({
+        command: 'cat app.py',
+        cwd: dir,
+      });
+      expect(cmdRes.exitCode).not.toBe(0);
+      expect(cmdRes.output).toContain('Windows cmd.exe hint');
+    }
   });
 });

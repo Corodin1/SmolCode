@@ -54,6 +54,12 @@ import {
   saveSkillFile,
 } from '../tools/agents-skills';
 import {
+  extractCodePasteBlocks,
+  StreamingCodeTagFilter,
+  type ParsedCodePasteBlock,
+  type TagPreviewInfo,
+} from '../tools/code-paste';
+import {
   normalizeHashlineEdits,
   resolveInsideWorkdir,
   runCreateFile,
@@ -64,7 +70,10 @@ import {
   runPatchFile,
   runReadRange,
   runReadSymbol,
+  runReplaceLineRange,
+  runReplaceSymbolPaste,
   runRepoSearch,
+  runWriteFilePaste,
 } from '../tools/fs-tools';
 import { commandNeedsApproval, executeSandboxedCommand } from '../tools/shell-tools';
 import {
@@ -115,6 +124,11 @@ function summarizeToolArgs(name: string, args: Record<string, unknown>): string 
   if (name === 'read_range')
     return `${String(args.filePath ?? '')} L${String(args.startLine ?? 1)}-${String(args.endLine ?? 60)}`;
   if (name === 'patch_file' || name === 'patch_hashline') return String(args.filePath ?? '');
+  if (name === '__code_paste_write') return String(args.filePath ?? '');
+  if (name === '__code_paste_symbol')
+    return `${String(args.filePath ?? '')}::${String(args.symbolName ?? '')}`;
+  if (name === '__code_paste_range')
+    return `${String(args.filePath ?? '')} L${String(args.startLine ?? 1)}-${String(args.endLine ?? 1)}`;
   if (name === 'create_file' || name === 'delete_file') return String(args.filePath ?? '');
   if (name === 'move_file') return `${String(args.fromPath ?? '')} -> ${String(args.toPath ?? '')}`;
   if (name === 'run_command') return String(args.command ?? '');
@@ -230,6 +244,18 @@ function extractFallbackToolCalls(
   return calls;
 }
 
+function parseFlexibleLineNumber(val: unknown): number | undefined {
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? Math.floor(val) : undefined;
+  }
+  if (typeof val === 'string') {
+    const cleaned = val.trim().replace(/^#?(?:line\s+|l(?=\d))/i, '').split(':')[0];
+    const num = Number(cleaned);
+    return Number.isFinite(num) ? Math.floor(num) : undefined;
+  }
+  return undefined;
+}
+
 function normalizeToolArguments(
   toolName: string,
   rawArgs: Record<string, unknown>,
@@ -255,31 +281,72 @@ function normalizeToolArguments(
     if (alias !== undefined) args.symbolName = alias;
   }
   if (toolName === 'read_range') {
-    if (args.startLine === undefined) {
-      const alias = args.start ?? args.start_line ?? args.fromLine;
-      if (alias !== undefined) args.startLine = Number(alias);
-    } else if (typeof args.startLine === 'string') {
-      args.startLine = Number(args.startLine);
-    }
-    if (args.endLine === undefined) {
-      const alias = args.end ?? args.end_line ?? args.toLine;
-      if (alias !== undefined) args.endLine = Number(alias);
-    } else if (typeof args.endLine === 'string') {
-      args.endLine = Number(args.endLine);
-    }
+    const rawStart = args.startLine ?? args.start ?? args.start_line ?? args.fromLine;
+    const parsedStart = parseFlexibleLineNumber(rawStart);
+    if (parsedStart !== undefined) args.startLine = parsedStart;
+    else delete args.startLine;
+
+    const rawEnd = args.endLine ?? args.end ?? args.end_line ?? args.toLine;
+    const parsedEnd = parseFlexibleLineNumber(rawEnd);
+    if (parsedEnd !== undefined) args.endLine = parsedEnd;
+    else delete args.endLine;
   }
   if (toolName === 'run_command' && args.command === undefined && args.cmd !== undefined) {
     args.command = args.cmd;
   }
-  if (
-    (toolName === 'patch_hashline' || toolName === 'patch_file') &&
-    typeof args.edits === 'string'
-  ) {
-    try {
-      const parsed = JSON.parse(repairJsonString(args.edits));
-      if (Array.isArray(parsed)) args.edits = parsed;
-    } catch {
-      // Leave unparseable string to fail cleanly in runPatchFile
+  if (toolName === 'create_file' && args.content === undefined) {
+    const alias = args.code ?? args.text ?? args.body ?? args.source;
+    if (alias !== undefined) args.content = alias;
+  }
+  if (toolName === 'patch_file' || toolName === 'patch_hashline') {
+    if (args.oldText === undefined) {
+      const alias = args.old_text ?? args.old ?? args.search ?? args.find ?? args.before;
+      if (alias !== undefined) args.oldText = alias;
+    }
+    if (args.newText === undefined) {
+      const alias = args.new_text ?? args.new ?? args.replace ?? args.replacement ?? args.after;
+      if (alias !== undefined) args.newText = alias;
+    }
+    if (typeof args.edits === 'string') {
+      try {
+        const parsed = JSON.parse(repairJsonString(args.edits));
+        if (Array.isArray(parsed)) args.edits = parsed;
+        else if (parsed && typeof parsed === 'object') args.edits = [parsed];
+      } catch {
+        // Leave unparseable string to fail cleanly in runPatchFile
+      }
+    } else if (args.edits && typeof args.edits === 'object' && !Array.isArray(args.edits)) {
+      args.edits = [args.edits];
+    } else if (args.edits === undefined) {
+      const hasTopAnchor =
+        args.startAnchor ??
+        args.start_anchor ??
+        args.startLine ??
+        args.start_line ??
+        args.anchor ??
+        args.line ??
+        args.start ??
+        args.range;
+      if (hasTopAnchor !== undefined) {
+        args.edits = [
+          {
+            op: args.op ?? args.operation ?? 'replace_range',
+            startAnchor: hasTopAnchor,
+            ...(args.endAnchor ?? args.end_anchor ?? args.endLine ?? args.end_line ?? args.end
+              ? {
+                  endAnchor:
+                    args.endAnchor ?? args.end_anchor ?? args.endLine ?? args.end_line ?? args.end,
+                }
+              : {}),
+            ...(args.content ?? args.newContent ?? args.text ?? args.code ?? args.newText
+              ? {
+                  content:
+                    args.content ?? args.newContent ?? args.text ?? args.code ?? args.newText,
+                }
+              : {}),
+          },
+        ];
+      }
     }
   }
   return args;
@@ -1250,9 +1317,10 @@ export class AgentOrchestrator {
       let anyColdReload = false;
       let stepCount = 0;
 
+      const MAX_TURN_STEPS = 24;
       const tThink = Date.now();
 
-      while (!ac.signal.aborted) {
+      while (!ac.signal.aborted && stepCount < MAX_TURN_STEPS) {
         stepCount += 1;
 
         // Drain mid-turn steering notes at the message tail so prefix KV cache stays intact
@@ -1273,10 +1341,48 @@ export class AgentOrchestrator {
           steeringNotes,
         });
 
+        loopGuard.invalidateFoldedReads(packed.foldedReadCalls);
         activeContextTokens = packed.activeContextTokens;
         tokensSavedByFolding = packed.tokensSavedByFolding;
 
         let stepThinking = '';
+        const livePasteLogs: ToolCallLog[] = [];
+        const createTagFilter = () =>
+          new StreamingCodeTagFilter(
+            (proseDelta) => {
+              this.emit({
+                type: 'content_delta',
+                threadId: thread.id,
+                turnId: assistantTurn.id,
+                delta: proseDelta,
+              });
+            },
+            (info: TagPreviewInfo) => {
+              const summary =
+                info.kind === 'replace_symbol' && info.symbolName
+                  ? `${info.filePath}::${info.symbolName}`
+                  : info.kind === 'replace_range' && info.startLine !== undefined
+                    ? `${info.filePath} L${info.startLine}-${info.endLine ?? info.startLine}`
+                    : info.filePath || 'file';
+              const entry: ToolCallLog = {
+                id: randomUUID(),
+                toolName: info.kind === 'file_write' ? 'create_file' : 'patch_file',
+                summary,
+                argsPreview: `<${info.kind}>`,
+                status: 'running',
+                filePath: info.filePath || undefined,
+              };
+              livePasteLogs.push(entry);
+              toolLogs.push(entry);
+              this.emit({
+                type: 'tool_update',
+                threadId: thread.id,
+                turnId: assistantTurn.id,
+                tool: entry,
+              });
+            },
+          );
+        const mainTagFilter = createTagFilter();
 
         // Keep think flag consistent across all steps unless thinking exhausted twice.
         const effectiveThink = turnThinkOverride ?? mainOpts.think;
@@ -1300,14 +1406,10 @@ export class AgentOrchestrator {
             });
           },
           onContentDelta: (delta) => {
-            this.emit({
-              type: 'content_delta',
-              threadId: thread.id,
-              turnId: assistantTurn.id,
-              delta,
-            });
+            mainTagFilter.push(delta);
           },
         });
+        mainTagFilter.flush();
 
         totalPromptEvalTokens += resp.promptEvalCount;
         totalPromptEvalMs += resp.promptEvalDurationMs;
@@ -1318,6 +1420,7 @@ export class AgentOrchestrator {
         }
 
         let effectiveContent = resp.content;
+        let effectiveThinking = resp.thinking;
         let toolCalls: ParsedToolCall[] =
           resp.toolCalls.length > 0
             ? resp.toolCalls
@@ -1334,6 +1437,7 @@ export class AgentOrchestrator {
           if (consecutiveThinkExhaustions >= 2 && effectiveThink) {
             turnThinkOverride = false;
           }
+          const nudgeTagFilter = createTagFilter();
           const nudgeSignal = AbortSignal.any([
             ac.signal,
             AbortSignal.timeout(Math.min(60_000, profile.stepTimeoutMs)),
@@ -1342,30 +1446,27 @@ export class AgentOrchestrator {
             model: mainOpts.model || resolvedMainModel,
             think: false,
             keep_alive: mainOpts.keepAlive,
-            options: { ...mainOpts.options, num_predict: 1024 },
+            options: { ...mainOpts.options, num_predict: Math.max(2048, profile.numPredict) },
             ...(toolsCapable ? { tools: threadTools } : {}),
             messages: [
               ...(packed.messages as OllamaChatMessage[]),
               {
                 role: 'user',
-                content: `Based on your reasoning (${resp.thinking.slice(-600)}), emit the exact tool call or final answer now.`,
+                content: `Based on your reasoning (${resp.thinking.slice(-600)}), emit the exact tool call, code block (<file_write>/<replace_symbol>/<replace_range>), or final answer now.`,
               },
             ],
             signal: nudgeSignal,
             onContentDelta: (delta) => {
-              this.emit({
-                type: 'content_delta',
-                threadId: thread.id,
-                turnId: assistantTurn.id,
-                delta,
-              });
+              nudgeTagFilter.push(delta);
             },
           });
+          nudgeTagFilter.flush();
           totalPromptEvalTokens += nudgeResp.promptEvalCount;
           totalPromptEvalMs += nudgeResp.promptEvalDurationMs;
           totalEvalTokens += nudgeResp.evalCount;
           totalEvalMs += nudgeResp.evalDurationMs;
           effectiveContent = nudgeResp.content || resp.content;
+          effectiveThinking = nudgeResp.thinking || resp.thinking;
           toolCalls =
             nudgeResp.toolCalls.length > 0
               ? nudgeResp.toolCalls
@@ -1377,8 +1478,40 @@ export class AgentOrchestrator {
           consecutiveThinkExhaustions = 0;
         }
 
-        if (toolCalls.length === 0) {
-          if (!finalAnswer) finalAnswer = effectiveContent.trim();
+        // Extract raw code-paste blocks (<file_write>, <replace_symbol>, <replace_range>)
+        const pasteExtraction = extractCodePasteBlocks(effectiveContent, effectiveThinking);
+        const cleanedAssistantContent = pasteExtraction.cleanedContent;
+        const preallocatedLogs = new Map<ParsedToolCall, ToolCallLog>();
+        const pasteCalls: ParsedToolCall[] = pasteExtraction.blocks.map(
+          (block: ParsedCodePasteBlock, idx: number) => {
+            const name =
+              block.kind === 'file_write'
+                ? '__code_paste_write'
+                : block.kind === 'replace_symbol'
+                  ? '__code_paste_symbol'
+                  : '__code_paste_range';
+            const tc: ParsedToolCall = {
+              name,
+              arguments: {
+                filePath: block.filePath,
+                ...(block.symbolName ? { symbolName: block.symbolName } : {}),
+                ...(block.startLine !== undefined ? { startLine: block.startLine } : {}),
+                ...(block.endLine !== undefined ? { endLine: block.endLine } : {}),
+                content: block.content,
+              },
+              ...(block.truncationError ? { parseError: block.truncationError } : {}),
+            };
+            const liveEntry = livePasteLogs[idx];
+            if (liveEntry) {
+              preallocatedLogs.set(tc, liveEntry);
+            }
+            return tc;
+          },
+        );
+        const allCalls = [...pasteCalls, ...toolCalls];
+
+        if (allCalls.length === 0) {
+          if (!finalAnswer) finalAnswer = cleanedAssistantContent.trim();
           // Run Stage B verification automatically if files were modified since last verify
           const currentEpoch = loopGuard.getMutationEpoch();
           if (
@@ -1387,7 +1520,7 @@ export class AgentOrchestrator {
             profile.verifyDepth !== 'syntax'
           ) {
             lastVerifiedEpoch = currentEpoch;
-            const verifyPassed = await this.runAndRecordStageB({
+            const verifyRes = await this.runAndRecordStageB({
               thread,
               workdir,
               assistantTurnId: assistantTurn.id,
@@ -1395,15 +1528,20 @@ export class AgentOrchestrator {
               timeoutMs: profile.verifyTimeoutMs,
               modifiedFiles: ledger.modifiedFiles,
               ledger,
+              loopGuard,
               toolLogs,
               steps,
-              assistantContent: effectiveContent,
+              assistantContent: cleanedAssistantContent,
               signal: ac.signal,
               onVerifyTime: (ms) => {
                 verifyMs += ms;
               },
             });
-            if (!verifyPassed) {
+            if (!verifyRes.passed) {
+              if (verifyRes.haltReason) {
+                finalAnswer = verifyRes.haltReason;
+                break;
+              }
               // Loop back so the model repairs the detected errors
               finalAnswer = '';
               continue;
@@ -1417,7 +1555,7 @@ export class AgentOrchestrator {
 
         const stepItem: StepHistoryItem = {
           id: randomUUID(),
-          assistantContent: effectiveContent,
+          assistantContent: cleanedAssistantContent,
           assistantThinking: stepThinking,
           toolCalls: [],
         };
@@ -1426,10 +1564,15 @@ export class AgentOrchestrator {
         let stepHadError = false;
 
         // Normalize arguments before LoopGuard & execution
-        const normalizedCalls = toolCalls.map((tc) => ({
-          ...tc,
-          arguments: normalizeToolArguments(tc.name, tc.arguments),
-        }));
+        const normalizedCalls = allCalls.map((tc) => {
+          const normalized = {
+            ...tc,
+            arguments: normalizeToolArguments(tc.name, tc.arguments),
+          };
+          const pre = preallocatedLogs.get(tc);
+          if (pre) preallocatedLogs.set(normalized, pre);
+          return normalized;
+        });
 
         // Partition consecutive safe read-only calls into parallel batches while preserving
         // deterministic ordering in toolLogs and stepItem.toolCalls.
@@ -1500,7 +1643,25 @@ export class AgentOrchestrator {
               }),
             );
 
-            for (const res of batchResults) {
+            const finalizeRemainingBatchLogs = (fromIdx: number, haltMsg: string) => {
+              for (let j = fromIdx; j < batchResults.length; j++) {
+                const rem = batchResults[j].item;
+                if (rem.logEntry.status === 'running') {
+                  rem.logEntry.status = 'error';
+                  rem.logEntry.durationMs = Date.now() - rem.startedAt;
+                  rem.logEntry.resultPreview = haltMsg;
+                  this.emit({
+                    type: 'tool_update',
+                    threadId: thread.id,
+                    turnId: assistantTurn.id,
+                    tool: { ...rem.logEntry },
+                  });
+                }
+              }
+            };
+
+            for (let idx = 0; idx < batchResults.length; idx++) {
+              const res = batchResults[idx];
               const { tc, guard, logEntry, startedAt } = res.item;
               if (res.kind === 'guard') {
                 stepHadError = true;
@@ -1514,6 +1675,7 @@ export class AgentOrchestrator {
                   tool: { ...logEntry },
                 });
                 if (guard.action === 'halt') {
+                  finalizeRemainingBatchLogs(idx + 1, 'Stopped due to earlier LoopGuard halt.');
                   finalAnswer = `${guard.reason}\n\nPartial progress summary:\n- Modified files: ${ledger.modifiedFiles.join(', ') || 'none'}`;
                   break;
                 }
@@ -1547,6 +1709,7 @@ export class AgentOrchestrator {
                   result: `Tool error: ${errMsg}`,
                 });
                 if (outcomeCheck.action === 'halt') {
+                  finalizeRemainingBatchLogs(idx + 1, 'Stopped due to earlier error halt.');
                   finalAnswer = outcomeCheck.reason ?? 'Stopped after repeated errors.';
                   break;
                 }
@@ -1580,6 +1743,7 @@ export class AgentOrchestrator {
                   isReadOnlySlice: execResult.isReadOnlySlice,
                 });
                 if (outcomeCheck.action === 'halt') {
+                  finalizeRemainingBatchLogs(idx + 1, 'Stopped due to earlier error halt.');
                   finalAnswer = outcomeCheck.reason ?? 'Stopped after repeated errors.';
                   break;
                 }
@@ -1591,30 +1755,44 @@ export class AgentOrchestrator {
           const tc = normalizedCalls[cursor];
           cursor += 1;
 
-          // Surface malformed JSON tool arguments clearly instead of executing {}
+          // Surface malformed JSON tool arguments or truncated code-paste tags clearly
           if (tc.parseError) {
             stepHadError = true;
-            const logEntry: ToolCallLog = {
+            const existingLog = preallocatedLogs.get(tc);
+            const logEntry: ToolCallLog = existingLog ?? {
               id: randomUUID(),
-              toolName: tc.name,
-              summary: 'Malformed JSON arguments',
+              toolName: tc.name.startsWith('__code_paste_') ? 'patch_file' : tc.name,
+              summary: summarizeToolArgs(tc.name, tc.arguments),
               argsPreview: tc.parseError.slice(0, 140),
               resultPreview: tc.parseError.slice(0, 200),
               status: 'error',
               durationMs: 0,
             };
-            toolLogs.push(logEntry);
+            logEntry.summary = existingLog
+              ? logEntry.summary
+              : tc.name.startsWith('__code_paste_')
+                ? summarizeToolArgs(tc.name, tc.arguments)
+                : 'Malformed JSON arguments';
+            logEntry.argsPreview = tc.parseError.slice(0, 140);
+            logEntry.resultPreview = tc.parseError.slice(0, 200);
+            logEntry.status = 'error';
+            logEntry.durationMs = 0;
+            if (!existingLog) {
+              toolLogs.push(logEntry);
+            }
             this.emit({
               type: 'tool_update',
               threadId: thread.id,
               turnId: assistantTurn.id,
-              tool: logEntry,
+              tool: { ...logEntry },
             });
             const outcomeCheck = loopGuard.recordOutcome(`json:${tc.name}`, true, tc.parseError);
             stepItem.toolCalls.push({
               name: tc.name,
               arguments: tc.arguments,
-              result: `Tool argument JSON parse error for "${tc.name}": ${tc.parseError}. Re-emit valid JSON matching the tool schema.`,
+              result: tc.name.startsWith('__code_paste_')
+                ? tc.parseError
+                : `Tool argument JSON parse error for "${tc.name}": ${tc.parseError}. Re-emit valid JSON matching the tool schema.`,
             });
             if (outcomeCheck.action === 'halt') {
               finalAnswer = outcomeCheck.reason ?? 'Stopped after repeated malformed tool JSON.';
@@ -1624,10 +1802,16 @@ export class AgentOrchestrator {
           }
 
           const guard = loopGuard.recordToolAttempt(tc.name, tc.arguments);
-          const logId = randomUUID();
-          const logEntry: ToolCallLog = {
-            id: logId,
-            toolName: tc.name,
+          const preLog = preallocatedLogs.get(tc);
+          const displayToolName =
+            tc.name === '__code_paste_write'
+              ? 'create_file'
+              : tc.name.startsWith('__code_paste_')
+                ? 'patch_file'
+                : tc.name;
+          const logEntry: ToolCallLog = preLog ?? {
+            id: randomUUID(),
+            toolName: displayToolName,
             summary: summarizeToolArgs(tc.name, tc.arguments),
             argsPreview: JSON.stringify(tc.arguments).slice(0, 140),
             status: 'running',
@@ -1636,13 +1820,15 @@ export class AgentOrchestrator {
                 ? tc.arguments.filePath
                 : undefined,
           };
-          toolLogs.push(logEntry);
-          this.emit({
-            type: 'tool_update',
-            threadId: thread.id,
-            turnId: assistantTurn.id,
-            tool: logEntry,
-          });
+          if (!preLog) {
+            toolLogs.push(logEntry);
+            this.emit({
+              type: 'tool_update',
+              threadId: thread.id,
+              turnId: assistantTurn.id,
+              tool: logEntry,
+            });
+          }
 
           const tTool = Date.now();
 
@@ -1697,6 +1883,9 @@ export class AgentOrchestrator {
             });
 
             if (execResult.isError || execResult.denied) stepHadError = true;
+            if (tc.name === '__code_paste_write' && !execResult.isError && !execResult.denied) {
+              logEntry.toolName = execResult.output.startsWith('Wrote ') ? 'patch_file' : 'create_file';
+            }
             logEntry.status = execResult.denied ? 'denied' : execResult.isError ? 'error' : 'ok';
             logEntry.durationMs = Date.now() - tTool;
             logEntry.resultPreview = execResult.output.slice(0, 200);
@@ -1780,7 +1969,7 @@ export class AgentOrchestrator {
             profile.verifyDepth !== 'syntax'
           ) {
             lastVerifiedEpoch = currentEpoch;
-            const verifyPassed = await this.runAndRecordStageB({
+            const verifyRes = await this.runAndRecordStageB({
               thread,
               workdir,
               assistantTurnId: assistantTurn.id,
@@ -1788,6 +1977,7 @@ export class AgentOrchestrator {
               timeoutMs: profile.verifyTimeoutMs,
               modifiedFiles: ledger.modifiedFiles,
               ledger,
+              loopGuard,
               toolLogs,
               steps,
               assistantContent: finishRequested.summary,
@@ -1796,7 +1986,11 @@ export class AgentOrchestrator {
                 verifyMs += ms;
               },
             });
-            if (!verifyPassed) {
+            if (!verifyRes.passed) {
+              if (verifyRes.haltReason) {
+                finalAnswer = verifyRes.haltReason;
+                break;
+              }
               continue;
             }
           }
@@ -1813,7 +2007,9 @@ export class AgentOrchestrator {
       if (!finalAnswer) {
         finalAnswer = ac.signal.aborted
           ? 'Turn stopped by user.'
-          : `Completed ${stepCount} steps. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
+          : stepCount >= MAX_TURN_STEPS
+            ? `Reached maximum turn step limit (${MAX_TURN_STEPS}). Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`
+            : `Completed ${stepCount} steps. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
       }
 
       // ================================================================
@@ -1995,12 +2191,13 @@ export class AgentOrchestrator {
     timeoutMs: number;
     modifiedFiles: string[];
     ledger: WorkingMemoryLedger;
+    loopGuard: LoopGuard;
     toolLogs: ToolCallLog[];
     steps: StepHistoryItem[];
     assistantContent: string;
     signal: AbortSignal;
     onVerifyTime: (ms: number) => void;
-  }): Promise<boolean> {
+  }): Promise<{ passed: boolean; haltReason?: string }> {
     this.setThreadStatus(params.thread.id, 'verifying');
     const t0 = Date.now();
     const logId = randomUUID();
@@ -2049,11 +2246,17 @@ export class AgentOrchestrator {
     if (!failed) {
       for (const r of results) {
         params.ledger.verifiedChecks.push(`${r.label} ✓`);
+        params.loopGuard.recordOutcome(`verify_gate:${r.label}`, false);
       }
       params.ledger.activeErrors = [];
-      return true;
+      return { passed: true };
     }
 
+    const outcomeCheck = params.loopGuard.recordOutcome(
+      `verify_gate:${failed.label}`,
+      true,
+      failed.digest,
+    );
     params.ledger.activeErrors = [failed.digest];
     params.steps.push({
       id: randomUUID(),
@@ -2068,7 +2271,42 @@ export class AgentOrchestrator {
         },
       ],
     });
-    return false;
+    return {
+      passed: false,
+      ...(outcomeCheck.action === 'halt' ? { haltReason: outcomeCheck.reason } : {}),
+    };
+  }
+
+  private async recordDiskMutation(params: {
+    workdir: string;
+    index: RepoIndex;
+    ledger: WorkingMemoryLedger;
+    loopGuard: LoopGuard;
+    relPath: string;
+    absPath: string;
+    inside: boolean;
+    structural: boolean;
+    trackChurn: boolean;
+  }): Promise<void> {
+    if (params.inside && !params.ledger.modifiedFiles.includes(params.relPath)) {
+      params.ledger.modifiedFiles.push(params.relPath);
+    }
+    params.loopGuard.invalidateOnMutation(params.relPath);
+    if (params.trackChurn) {
+      params.loopGuard.recordAppliedEdit(params.relPath);
+    }
+    if (params.inside && existsSync(params.absPath)) {
+      this.indexer.markDirty(params.workdir, params.relPath, params.structural);
+      const nextText = readFileSync(params.absPath, 'utf8');
+      const parsed = await this.treeSitter.extractSymbolsAndImports(params.relPath, nextText);
+      params.index.files.set(params.relPath, {
+        relPath: params.relPath,
+        mtimeMs: Date.now(),
+        symbols: parsed.symbols,
+        imports: parsed.imports,
+        lineCount: nextText.split(/\r?\n/).length,
+      });
+    }
   }
 
   private async executeTool(params: {
@@ -2248,7 +2486,8 @@ export class AgentOrchestrator {
         toolName === 'create_file' ||
         toolName === 'delete_file' ||
         toolName === 'move_file' ||
-        toolName === 'save_skill')
+        toolName === 'save_skill' ||
+        toolName.startsWith('__code_paste_'))
     ) {
       return {
         output:
@@ -2436,6 +2675,7 @@ export class AgentOrchestrator {
       const symbolName = String(args.symbolName ?? '');
       const res = runReadSymbol(index, this.indexer, filePath, symbolName);
       ledger.inspectedSymbols.push(`${filePath}::${symbolName}`);
+      loopGuard.recordReadRefresh(filePath);
       return {
         output: res.output,
         isReadOnlySlice: true,
@@ -2450,11 +2690,111 @@ export class AgentOrchestrator {
       const endLine = Number(args.endLine ?? startLine + 60);
       const res = runReadRange(workdir, filePath, startLine, endLine);
       ledger.inspectedSymbols.push(`${filePath}:L${startLine}-${endLine}`);
+      loopGuard.recordReadRefresh(filePath);
       return {
         output: res.output,
         isReadOnlySlice: true,
         filePath,
         tokensSavedByAst: res.tokensSavedApprox,
+      };
+    }
+
+    if (toolName === '__code_paste_write') {
+      const filePath = String(args.filePath ?? '');
+      const gate = await this.ensureFileWriteAllowed({
+        thread,
+        workdir,
+        toolName: 'create_file',
+        targetPaths: [filePath],
+      });
+      if (!gate.allowed) {
+        return { output: gate.deniedOutput, denied: true, isError: true };
+      }
+      const res = await runWriteFilePaste({
+        workdir,
+        filePath,
+        content: String(args.content ?? ''),
+        treeSitter: this.treeSitter,
+        readOnly: thread.approvalPolicy === 'read-only',
+        allowOutsideRoot: gate.allowOutsideRoot,
+      });
+      ledger.activeErrors = res.syntaxOk ? [] : [res.output];
+      if (res.ok) {
+        await this.recordDiskMutation({
+          workdir,
+          index,
+          ledger,
+          loopGuard,
+          relPath: res.relPath,
+          absPath: res.absPath,
+          inside: res.inside,
+          structural: !res.existed,
+          trackChurn: true,
+        });
+      }
+      return {
+        output: res.output,
+        isError: !res.syntaxOk,
+        filePath: res.relPath,
+        linesAdded: res.linesAdded,
+        linesRemoved: res.linesRemoved,
+      };
+    }
+
+    if (toolName === '__code_paste_symbol' || toolName === '__code_paste_range') {
+      const filePath = String(args.filePath ?? '');
+      const gate = await this.ensureFileWriteAllowed({
+        thread,
+        workdir,
+        toolName: 'patch_file',
+        targetPaths: [filePath],
+      });
+      if (!gate.allowed) {
+        return { output: gate.deniedOutput, denied: true, isError: true };
+      }
+      const res =
+        toolName === '__code_paste_symbol'
+          ? await runReplaceSymbolPaste({
+              workdir,
+              index,
+              indexer: this.indexer,
+              filePath,
+              symbolName: String(args.symbolName ?? ''),
+              content: String(args.content ?? ''),
+              treeSitter: this.treeSitter,
+              readOnly: thread.approvalPolicy === 'read-only',
+              allowOutsideRoot: gate.allowOutsideRoot,
+            })
+          : await runReplaceLineRange({
+              workdir,
+              filePath,
+              startLine: Number(args.startLine ?? 1),
+              endLine: Number(args.endLine ?? args.startLine ?? 1),
+              content: String(args.content ?? ''),
+              treeSitter: this.treeSitter,
+              readOnly: thread.approvalPolicy === 'read-only',
+              allowOutsideRoot: gate.allowOutsideRoot,
+            });
+      ledger.activeErrors = res.syntaxOk ? [] : [res.output];
+      if (res.ok) {
+        await this.recordDiskMutation({
+          workdir,
+          index,
+          ledger,
+          loopGuard,
+          relPath: res.relPath,
+          absPath: res.absPath,
+          inside: res.inside,
+          structural: false,
+          trackChurn: true,
+        });
+      }
+      return {
+        output: res.output,
+        isError: !res.syntaxOk,
+        filePath: res.relPath,
+        linesAdded: res.linesAdded,
+        linesRemoved: res.linesRemoved,
       };
     }
 
@@ -2469,11 +2809,26 @@ export class AgentOrchestrator {
       if (!gate.allowed) {
         return { output: gate.deniedOutput, denied: true, isError: true };
       }
-      const oldText = args.oldText !== undefined ? String(args.oldText) : undefined;
-      const newText = args.newText !== undefined ? String(args.newText) : undefined;
-      const edits = Array.isArray(args.edits)
-        ? normalizeHashlineEdits(args.edits)
-        : undefined;
+      let oldText = args.oldText !== undefined ? String(args.oldText) : undefined;
+      let newText = args.newText !== undefined ? String(args.newText) : undefined;
+      const rawEdits = Array.isArray(args.edits) ? args.edits : undefined;
+      if (
+        oldText === undefined &&
+        newText === undefined &&
+        rawEdits &&
+        rawEdits.length === 1 &&
+        rawEdits[0] &&
+        typeof rawEdits[0] === 'object'
+      ) {
+        const first = rawEdits[0] as Record<string, unknown>;
+        const rawOld = first.oldText ?? first.old_text ?? first.old ?? first.search;
+        const rawNew = first.newText ?? first.new_text ?? first.new ?? first.replace;
+        if (rawOld !== undefined && rawNew !== undefined) {
+          oldText = String(rawOld);
+          newText = String(rawNew);
+        }
+      }
+      const edits = rawEdits ? normalizeHashlineEdits(rawEdits) : undefined;
       const res = await runPatchFile({
         workdir,
         filePath,
@@ -2484,29 +2839,19 @@ export class AgentOrchestrator {
         readOnly: thread.approvalPolicy === 'read-only',
         allowOutsideRoot: gate.allowOutsideRoot,
       });
-      if (res.ok && res.inside && !ledger.modifiedFiles.includes(res.relPath)) {
-        ledger.modifiedFiles.push(res.relPath);
-      }
-      if (!res.syntaxOk) {
-        ledger.activeErrors = [res.output];
-      } else {
-        ledger.activeErrors = [];
-      }
-      // Refresh index entry & invalidate LoopGuard read/command epochs on disk change
-      if (existsSync(res.absPath) && res.ok) {
-        loopGuard.invalidateOnMutation(res.relPath);
-        if (res.inside) {
-          this.indexer.markDirty(workdir, res.relPath, false);
-          const nextText = readFileSync(res.absPath, 'utf8');
-          const parsed = await this.treeSitter.extractSymbolsAndImports(res.relPath, nextText);
-          index.files.set(res.relPath, {
-            relPath: res.relPath,
-            mtimeMs: Date.now(),
-            symbols: parsed.symbols,
-            imports: parsed.imports,
-            lineCount: nextText.split(/\r?\n/).length,
-          });
-        }
+      ledger.activeErrors = res.syntaxOk ? [] : [res.output];
+      if (res.ok) {
+        await this.recordDiskMutation({
+          workdir,
+          index,
+          ledger,
+          loopGuard,
+          relPath: res.relPath,
+          absPath: res.absPath,
+          inside: res.inside,
+          structural: false,
+          trackChurn: true,
+        });
       }
       return {
         output: res.output,
@@ -2538,27 +2883,19 @@ export class AgentOrchestrator {
         readOnly: thread.approvalPolicy === 'read-only',
         allowOutsideRoot: gate.allowOutsideRoot,
       });
-      if (res.ok && res.inside && !ledger.modifiedFiles.includes(res.relPath)) {
-        ledger.modifiedFiles.push(res.relPath);
-      }
-      if (!res.syntaxOk) {
-        ledger.activeErrors = [res.output];
-      } else {
-        ledger.activeErrors = [];
-      }
+      ledger.activeErrors = res.syntaxOk ? [] : [res.output];
       if (res.ok) {
-        loopGuard.invalidateOnMutation(res.relPath);
-        if (res.inside) {
-          this.indexer.markDirty(workdir, res.relPath, true);
-          const parsed = await this.treeSitter.extractSymbolsAndImports(res.relPath, content);
-          index.files.set(res.relPath, {
-            relPath: res.relPath,
-            mtimeMs: Date.now(),
-            symbols: parsed.symbols,
-            imports: parsed.imports,
-            lineCount: res.linesAdded,
-          });
-        }
+        await this.recordDiskMutation({
+          workdir,
+          index,
+          ledger,
+          loopGuard,
+          relPath: res.relPath,
+          absPath: res.absPath,
+          inside: res.inside,
+          structural: true,
+          trackChurn: false,
+        });
       }
       return {
         output: res.output,

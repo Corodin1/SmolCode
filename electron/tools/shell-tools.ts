@@ -136,7 +136,16 @@ export async function executeSandboxedCommand(params: {
       settled = true;
       cleanup();
       emitTail(true);
-      const raw = extraNote ? [combined, extraNote].filter(Boolean).join('\n') : combined;
+      let raw = extraNote ? [combined, extraNote].filter(Boolean).join('\n') : combined;
+      if (
+        process.platform === 'win32' &&
+        exitCode !== 0 &&
+        /is not recognized as an internal or external command/i.test(raw) &&
+        /'(?:sleep|cat|head|tail|grep|ls|rm|touch|wc|sed|awk|which)'/i.test(raw)
+      ) {
+        raw +=
+          '\n[Windows cmd.exe hint: POSIX commands (sleep/cat/head/tail/grep/ls/rm) are unavailable. Use read_range/repo_search/delete_file tools, or Windows/Python commands (type, findstr, dir, python -c "import time; time.sleep(1)").]';
+      }
       const digested = digestCommandOutput(raw, exitCode, 2200);
       resolve({
         exitCode,

@@ -710,4 +710,46 @@ describe('SmolCode UI components', () => {
     expect(highContrast.useAcrylic).toBe(false);
     expect(highContrast.backgroundColor).toBe('#070709');
   });
+
+  it('surfaces failed read_range / explore calls as visible Tool failed diagnostics instead of collapsing silently', () => {
+    render(
+      <ActivityTimeline
+        toolCalls={[
+          {
+            id: 'r1',
+            toolName: 'read_range',
+            summary: 'main.py L105-145',
+            argsPreview: '{}',
+            resultPreview: 'File: main.py',
+            status: 'ok',
+            durationMs: 1,
+            filePath: 'main.py',
+          },
+          {
+            id: 'r2',
+            toolName: 'read_range',
+            summary: 'main.py L105-145',
+            argsPreview: '{}',
+            resultPreview: 'LoopGuard: "read_range" was already called on this unchanged workspace state.',
+            status: 'error',
+            durationMs: 0,
+            filePath: 'main.py',
+          },
+          {
+            id: 'r3',
+            toolName: 'read_range',
+            summary: 'main.py L1-20',
+            argsPreview: '{}',
+            resultPreview: 'File: main.py',
+            status: 'ok',
+            durationMs: 1,
+            filePath: 'main.py',
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('Tool failed')).toBeInTheDocument();
+    expect(screen.getByText(/already called on this unchanged workspace state/i)).toBeInTheDocument();
+  });
 });

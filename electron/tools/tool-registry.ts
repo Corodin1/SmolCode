@@ -125,7 +125,7 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
     function: {
       name: 'patch_hashline',
       description:
-        'Apply line:hash anchored edits (replace_range, insert_after, insert_before, delete_range); auto-checks syntax.',
+        'Apply line:hash anchored edits (e.g. startAnchor "42:a7" from read_range/read_symbol); auto-checks syntax. For multi-line edits or full files, prefer <file_write>, <replace_symbol>, or <replace_range> tags.',
       parameters: {
         type: 'object',
         properties: {
@@ -139,9 +139,18 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
                   type: 'string',
                   enum: ['replace_range', 'insert_after', 'insert_before', 'delete_range'],
                 },
-                startAnchor: { type: 'string' },
-                endAnchor: { type: 'string' },
-                content: { type: 'string' },
+                startAnchor: {
+                  type: 'string',
+                  description: 'Required "<line>:<2charHash>" anchor from read_range/read_symbol, e.g. "42:a7".',
+                },
+                endAnchor: {
+                  type: 'string',
+                  description: 'Optional inclusive end "<line>:<2charHash>" anchor, e.g. "48:f2".',
+                },
+                content: {
+                  type: 'string',
+                  description: 'Replacement or inserted code lines (omit for delete_range).',
+                },
               },
               required: ['op', 'startAnchor'],
             },
@@ -160,8 +169,8 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
         type: 'object',
         properties: {
           filePath: { type: 'string' },
-          oldText: { type: 'string' },
-          newText: { type: 'string' },
+          oldText: { type: 'string', description: 'Exact existing lines to replace.' },
+          newText: { type: 'string', description: 'Replacement lines.' },
         },
         required: ['filePath', 'oldText', 'newText'],
       },
@@ -216,7 +225,10 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: 'Run shell command in workspace; returns digested output.',
+      description:
+        process.platform === 'win32'
+          ? 'Run command in Windows cmd.exe inside workspace (no bash/POSIX sleep, cat, head, grep, ls); returns digested output.'
+          : 'Run shell command in workspace; returns digested output.',
       parameters: {
         type: 'object',
         properties: {

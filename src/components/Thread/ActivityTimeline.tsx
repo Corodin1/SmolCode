@@ -96,7 +96,7 @@ function groupTools(tools: ToolCallLog[], isStreaming: boolean): TimelineGroup[]
   };
 
   for (const t of tools) {
-    if (EXPLORE_TOOLS.has(t.toolName)) {
+    if (EXPLORE_TOOLS.has(t.toolName) && t.status !== 'error' && t.status !== 'denied') {
       runBuffer.push(t);
     } else {
       flushRun();

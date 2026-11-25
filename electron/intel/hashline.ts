@@ -62,13 +62,22 @@ export function formatHashlineSlice(
 }
 
 export function parseAnchor(anchor: string): { line: number; hash: string | null } {
-  const cleaned = anchor
-    .trim()
-    .split('|')[0]
-    .trim()
-    .replace(/^(?:line\s+|l(?=\d))/i, '');
+  let cleaned = anchor.trim().split('|')[0].trim();
+  // Strip optional file prefix like "main.py#L42:a7" or "src/a.ts:42:a7" (must contain non-digits before separator)
+  const filePrefixMatch = cleaned.match(
+    /^[^\s:#]*[a-zA-Z_./\\][^\s:#]*(?:#L?|:)(\d+(?::[0-9a-zA-Z]{2})?)$/i,
+  );
+  if (filePrefixMatch) {
+    cleaned = filePrefixMatch[1];
+  }
+  cleaned = cleaned.replace(/^#?(?:line\s+|l(?=\d))/i, '').trim();
   const match = cleaned.match(/^(\d+)(?::([0-9a-zA-Z]{2}))?$/);
   if (!match) {
+    if (!cleaned) {
+      throw new Error(
+        `Missing hashline anchor "${anchor}". Pass "<line>:<2charHash>" (e.g. "42:a7") in edits[].startAnchor, or use <replace_range path="..." start="..." end="...">...</replace_range> or patch_file(filePath, oldText, newText).`,
+      );
+    }
     throw new Error(
       `Invalid hashline anchor "${anchor}". Expected "<line>:<2charHash>", e.g. "42:a7".`,
     );

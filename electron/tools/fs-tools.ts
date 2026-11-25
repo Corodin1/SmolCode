@@ -20,6 +20,10 @@ import {
 } from '../intel/hashline';
 import type { RepoIndex, RepoIndexer } from '../intel/repo-indexer';
 import type { TreeSitterService } from '../intel/tree-sitter-service';
+import {
+  checkFileWriteShrinkGuard,
+  validateCodePasteContent,
+} from './code-paste';
 import { verifySyntaxGate } from './verify-gate';
 
 const FS_SKIP_DIRS = new Set([
@@ -334,8 +338,12 @@ export function runReadRange(
   }
   const text = readFileSync(absPath, 'utf8');
   const lines = text.split(/\r?\n/);
-  const clampedStart = Math.max(1, startLine);
-  const clampedEnd = Math.min(lines.length, Math.max(clampedStart, Math.min(endLine, clampedStart + 179)));
+  const clampedStart = Number.isFinite(startLine) ? Math.max(1, Math.floor(startLine)) : 1;
+  const requestedEnd = Number.isFinite(endLine) ? Math.floor(endLine) : clampedStart + 60;
+  const clampedEnd = Math.min(
+    lines.length,
+    Math.max(clampedStart, Math.min(requestedEnd, clampedStart + 179)),
+  );
   const slice = formatHashlineSlice(text, clampedStart, clampedEnd);
   const savedChars = Math.max(0, text.length - slice.length);
 
@@ -348,9 +356,65 @@ export function runReadRange(
 export function normalizeHashlineEdits(rawEdits: unknown[]): HashlineEdit[] {
   return rawEdits.map((raw) => {
     const item = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    const start =
-      item.startAnchor ?? item.start_anchor ?? item.anchor ?? item.start ?? item.line;
-    const end = item.endAnchor ?? item.end_anchor ?? item.end;
+    const rawStart =
+      item.startAnchor ??
+      item.start_anchor ??
+      item.startLine ??
+      item.start_line ??
+      item.fromLine ??
+      item.from_line ??
+      item.anchor ??
+      item.start ??
+      item.line ??
+      item.lineNumber ??
+      item.line_number ??
+      item.from ??
+      item.at;
+    const rawEnd =
+      item.endAnchor ??
+      item.end_anchor ??
+      item.endLine ??
+      item.end_line ??
+      item.toLine ??
+      item.to_line ??
+      item.end ??
+      item.to;
+    const rawContent =
+      item.content ??
+      item.newContent ??
+      item.new_content ??
+      item.text ??
+      item.code ??
+      item.replacement ??
+      item.newText ??
+      item.new_text;
+
+    let startAnchor = rawStart !== undefined && rawStart !== null ? String(rawStart).trim() : '';
+    let endAnchor = rawEnd !== undefined && rawEnd !== null ? String(rawEnd).trim() : undefined;
+
+    // Support range shorthand like "160-167", "L160-L167", or "160:a7-167:b2"
+    if (startAnchor && !endAnchor) {
+      const rangeStr =
+        typeof item.range === 'string' && item.range.trim() ? item.range.trim() : startAnchor;
+      const rangeMatch = rangeStr.match(
+        /^#?(?:line\s+|l(?=\d))?(\d+(?::[0-9a-zA-Z]{2})?)\s*[-–]\s*#?(?:line\s+|l(?=\d))?(\d+(?::[0-9a-zA-Z]{2})?)$/i,
+      );
+      if (rangeMatch) {
+        startAnchor = rangeMatch[1];
+        endAnchor = rangeMatch[2];
+      }
+    } else if (!startAnchor && typeof item.range === 'string') {
+      const rangeMatch = item.range
+        .trim()
+        .match(
+          /^#?(?:line\s+|l(?=\d))?(\d+(?::[0-9a-zA-Z]{2})?)\s*[-–]\s*#?(?:line\s+|l(?=\d))?(\d+(?::[0-9a-zA-Z]{2})?)$/i,
+        );
+      if (rangeMatch) {
+        startAnchor = rangeMatch[1];
+        endAnchor = endAnchor ?? rangeMatch[2];
+      }
+    }
+
     const rawOp = String(item.op ?? item.operation ?? 'replace_range');
     const op: HashlineEdit['op'] =
       rawOp === 'insert_after' || rawOp === 'insert_before' || rawOp === 'delete_range'
@@ -358,9 +422,9 @@ export function normalizeHashlineEdits(rawEdits: unknown[]): HashlineEdit[] {
         : 'replace_range';
     return {
       op,
-      startAnchor: start !== undefined ? String(start) : '',
-      ...(end !== undefined ? { endAnchor: String(end) } : {}),
-      ...(item.content !== undefined ? { content: String(item.content) } : {}),
+      startAnchor,
+      ...(endAnchor ? { endAnchor } : {}),
+      ...(rawContent !== undefined && rawContent !== null ? { content: String(rawContent) } : {}),
     };
   });
 }
@@ -406,12 +470,19 @@ export async function runPatchFile(params: {
     maxChangedLine: number;
   };
 
-  if (params.edits && params.edits.length > 0) {
+  const hasValidHashlineEdits =
+    params.edits && params.edits.length > 0 && params.edits.every((e) => e.startAnchor.trim().length > 0);
+
+  if (hasValidHashlineEdits && params.edits) {
     applied = applyHashlineEdits(original, params.edits);
   } else if (params.oldText !== undefined && params.newText !== undefined) {
     applied = applyFuzzyPatch(original, params.oldText, params.newText);
+  } else if (params.edits && params.edits.length > 0) {
+    applied = applyHashlineEdits(original, params.edits);
   } else {
-    throw new Error('Patch requires either edits[] (patch_hashline) or oldText/newText (patch_file).');
+    throw new Error(
+      'Patch requires valid edits[] with startAnchor (e.g. "42:a7"), oldText/newText (patch_file), or <replace_range>/<replace_symbol> raw code tags.',
+    );
   }
 
   const syntax = await verifySyntaxGate(params.treeSitter, displayPath, applied.nextContent);
@@ -431,6 +502,10 @@ export async function runPatchFile(params: {
 
   writeFileSync(absPath, applied.nextContent, 'utf8');
   const tokensSavedByHashline = Math.max(12, Math.round((applied.linesRemoved * 28) / 4));
+  const totalLines = applied.nextContent.split(/\r?\n/).length;
+  const snippetStart = Math.max(1, applied.minChangedLine - 3);
+  const snippetEnd = Math.min(totalLines, applied.maxChangedLine + 3, snippetStart + 24);
+  const refreshed = formatHashlineSlice(applied.nextContent, snippetStart, snippetEnd);
 
   return {
     ok: true,
@@ -440,9 +515,239 @@ export async function runPatchFile(params: {
     linesAdded: applied.linesAdded,
     linesRemoved: applied.linesRemoved,
     syntaxOk: true,
-    output: `Patched ${displayPath} (+${applied.linesAdded} -${applied.linesRemoved}), syntax OK.`,
+    output: `Patched ${displayPath} (+${applied.linesAdded} -${applied.linesRemoved}), syntax OK.\nUpdated lines (L${snippetStart}-${snippetEnd}/${totalLines}):\n${refreshed}`,
     tokensSavedByHashline,
   };
+}
+
+function buildRefreshedAnchorOutput(displayPath: string, content: string, minLine: number, maxLine: number): string {
+  const totalLines = content.split(/\r?\n/).length;
+  const snippetStart = Math.max(1, minLine - 3);
+  const snippetEnd = Math.min(totalLines, maxLine + 3, snippetStart + 24);
+  const refreshed = formatHashlineSlice(content, snippetStart, snippetEnd);
+  return `Updated lines (L${snippetStart}-${snippetEnd}/${totalLines}) in ${displayPath}:\n${refreshed}`;
+}
+
+export async function runReplaceLineRange(params: {
+  workdir: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+  treeSitter: TreeSitterService;
+  readOnly: boolean;
+  allowOutsideRoot?: boolean;
+}): Promise<{
+  ok: boolean;
+  relPath: string;
+  absPath: string;
+  inside: boolean;
+  linesAdded: number;
+  linesRemoved: number;
+  syntaxOk: boolean;
+  output: string;
+}> {
+  if (params.readOnly) {
+    throw new Error('Blocked: thread approval policy is set to read-only.');
+  }
+  const placeholderErr = validateCodePasteContent(params.content);
+  if (placeholderErr) {
+    throw new Error(placeholderErr);
+  }
+  const { absPath, relPath, inside } = resolveInsideWorkdir(params.workdir, params.filePath);
+  if (!inside && !params.allowOutsideRoot) {
+    throw new Error(`Refusing edit outside active workspace: ${params.filePath}`);
+  }
+  const displayPath = inside ? relPath : absPath;
+  if (!existsSync(absPath)) {
+    throw new Error(`Cannot replace range in missing file: ${displayPath}. Use <file_write> instead.`);
+  }
+
+  const original = readFileSync(absPath, 'utf8');
+  const eol = original.includes('\r\n') ? '\r\n' : '\n';
+  const trailingNewline = original.endsWith('\n');
+  const lines = original.split(/\r?\n/);
+  if (trailingNewline && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+
+  const startLn = Math.floor(params.startLine);
+  const endLn = Math.min(lines.length, Math.floor(params.endLine));
+  if (!Number.isFinite(startLn) || !Number.isFinite(endLn) || startLn < 1 || startLn > lines.length || endLn < startLn) {
+    throw new Error(`Invalid line range L${params.startLine}-${params.endLine} for ${displayPath} (${lines.length} lines).`);
+  }
+
+  const replacementLines = params.content.replace(/\r\n/g, '\n').split('\n');
+  const removeCount = endLn - startLn + 1;
+  lines.splice(startLn - 1, removeCount, ...replacementLines);
+
+  let nextContent = lines.join(eol);
+  if (trailingNewline && nextContent.length > 0 && !nextContent.endsWith(eol)) {
+    nextContent += eol;
+  }
+
+  const syntax = await verifySyntaxGate(params.treeSitter, displayPath, nextContent);
+  if (!syntax.ok) {
+    return {
+      ok: false,
+      relPath: displayPath,
+      absPath,
+      inside,
+      linesAdded: 0,
+      linesRemoved: 0,
+      syntaxOk: false,
+      output: `Edit rejected (not written) due to syntax errors:\n${syntax.errorsText}\nFix syntax and retry.`,
+    };
+  }
+
+  writeFileSync(absPath, nextContent, 'utf8');
+  const linesAdded = replacementLines.length;
+  const maxChanged = startLn + Math.max(0, linesAdded - 1);
+  const anchorBlock = buildRefreshedAnchorOutput(displayPath, nextContent, startLn, maxChanged);
+  return {
+    ok: true,
+    relPath: displayPath,
+    absPath,
+    inside,
+    linesAdded,
+    linesRemoved: removeCount,
+    syntaxOk: true,
+    output: `Replaced L${startLn}-${endLn} in ${displayPath} (+${linesAdded} -${removeCount}), syntax OK.\n${anchorBlock}`,
+  };
+}
+
+export async function runWriteFilePaste(params: {
+  workdir: string;
+  filePath: string;
+  content: string;
+  treeSitter: TreeSitterService;
+  readOnly: boolean;
+  allowOutsideRoot?: boolean;
+}): Promise<{
+  ok: boolean;
+  existed: boolean;
+  relPath: string;
+  absPath: string;
+  inside: boolean;
+  linesAdded: number;
+  linesRemoved: number;
+  syntaxOk: boolean;
+  output: string;
+}> {
+  if (params.readOnly) {
+    throw new Error('Blocked: thread approval policy is set to read-only.');
+  }
+  const placeholderErr = validateCodePasteContent(params.content);
+  if (placeholderErr) {
+    throw new Error(placeholderErr);
+  }
+  const { absPath, relPath, inside } = resolveInsideWorkdir(params.workdir, params.filePath);
+  if (!inside && !params.allowOutsideRoot) {
+    throw new Error(`Refusing file_write outside active workspace: ${params.filePath}`);
+  }
+  const displayPath = inside ? relPath : absPath;
+  const existed = existsSync(absPath);
+  let origLineCount = 0;
+  let eol: '\r\n' | '\n' = '\n';
+  if (existed) {
+    const original = readFileSync(absPath, 'utf8');
+    if (original.includes('\r\n')) eol = '\r\n';
+    origLineCount = original.split(/\r?\n/).length;
+    const shrinkErr = checkFileWriteShrinkGuard(displayPath, original, params.content);
+    if (shrinkErr) {
+      throw new Error(shrinkErr);
+    }
+  }
+
+  const normalizedContent =
+    eol === '\r\n'
+      ? params.content.replace(/\r?\n/g, '\r\n')
+      : params.content.replace(/\r\n/g, '\n');
+  const finalContent =
+    normalizedContent.length > 0 && !normalizedContent.endsWith(eol)
+      ? `${normalizedContent}${eol}`
+      : normalizedContent;
+
+  const syntax = await verifySyntaxGate(params.treeSitter, displayPath, finalContent);
+  if (!syntax.ok) {
+    return {
+      ok: false,
+      existed,
+      relPath: displayPath,
+      absPath,
+      inside,
+      linesAdded: 0,
+      linesRemoved: 0,
+      syntaxOk: false,
+      output: `${existed ? 'Write' : 'Create'} rejected (not written) due to syntax errors:\n${syntax.errorsText}\nFix syntax and retry.`,
+    };
+  }
+
+  mkdirSync(dirname(absPath), { recursive: true });
+  writeFileSync(absPath, finalContent, 'utf8');
+
+  const linesAdded = finalContent.split(/\r?\n/).length;
+  const actionVerb = existed ? 'Wrote' : 'Created';
+  return {
+    ok: true,
+    existed,
+    relPath: displayPath,
+    absPath,
+    inside,
+    linesAdded,
+    linesRemoved: origLineCount,
+    syntaxOk: true,
+    output: `${actionVerb} ${displayPath} (${linesAdded} lines), syntax check passed.`,
+  };
+}
+
+export async function runReplaceSymbolPaste(params: {
+  workdir: string;
+  index: RepoIndex;
+  indexer: RepoIndexer;
+  filePath: string;
+  symbolName: string;
+  content: string;
+  treeSitter: TreeSitterService;
+  readOnly: boolean;
+  allowOutsideRoot?: boolean;
+}): Promise<{
+  ok: boolean;
+  relPath: string;
+  absPath: string;
+  inside: boolean;
+  linesAdded: number;
+  linesRemoved: number;
+  syntaxOk: boolean;
+  output: string;
+}> {
+  const { absPath, relPath, inside } = resolveInsideWorkdir(params.workdir, params.filePath);
+  if (!inside && !params.allowOutsideRoot) {
+    throw new Error(`Refusing symbol replace outside active workspace: ${params.filePath}`);
+  }
+  const displayPath = inside ? relPath : absPath;
+  if (!existsSync(absPath)) {
+    throw new Error(`Cannot replace symbol in missing file: ${displayPath}.`);
+  }
+  const range = params.indexer.findSymbolBodyRange(params.index, relPath, params.symbolName);
+  if (!range) {
+    const fileInfo = params.index.files.get(relPath.replace(/\\/g, '/'));
+    const symList =
+      fileInfo?.symbols.map((s) => `${s.name} [L${s.startLine}-${s.endLine}]`).join(', ') || 'none';
+    throw new Error(
+      `Symbol "${params.symbolName}" not found in ${displayPath}. Available symbols: ${symList}`,
+    );
+  }
+  return runReplaceLineRange({
+    workdir: params.workdir,
+    filePath: params.filePath,
+    startLine: range.startLine,
+    endLine: range.endLine,
+    content: params.content,
+    treeSitter: params.treeSitter,
+    readOnly: params.readOnly,
+    allowOutsideRoot: params.allowOutsideRoot,
+  });
 }
 
 export async function runCreateFile(params: {

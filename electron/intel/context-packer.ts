@@ -23,6 +23,7 @@ export interface PackedContextResult {
   kvPrefixTokens: number;
   activeContextTokens: number;
   tokensSavedByFolding: number;
+  foldedReadCalls: Array<{ stepId: string; name: string; arguments: Record<string, unknown> }>;
 }
 
 export function estimateTokens(text: string): number {
@@ -58,15 +59,20 @@ export function buildImmutableZoneAPrefix(params: {
   skillCatalog?: string;
 }): { systemPrompt: string; prefixHash: string; prefixTokens: number } {
   const isPlan = params.interactionMode === 'plan';
+  const osShellRule =
+    process.platform === 'win32'
+      ? `- Host OS: Windows (run_command uses cmd.exe, NOT bash — never run sleep, cat, head, tail, grep, ls, or rm; use read_range/repo_search/delete_file tools, or Windows/Python commands like timeout /t, type, findstr, dir, python).`
+      : `- Host OS: ${process.platform} (run_command runs a POSIX shell).`;
   const parts = [
     `You are SmolCode, an autonomous local coding agent.`,
     `Rules:`,
+    osShellRule,
     `- Act directly on Prefetched Context Slices without redundant re-reads.`,
     `- Use read_symbol / read_range before editing; use list_dir / find_files for layout or non-code files.`,
     `- If Available Skills lists a matching skill, call read_skill(name) first.`,
     isPlan
       ? `- PLAN MODE (read-only): Explore without modifying files, clarify ambiguity with request_user_input, and call propose_plan before finish_turn.`
-      : `- Prefer patch_hashline (exact line:hash anchors) for edits; reserve patch_file for short unique blocks. Syntax is auto-checked.`,
+      : `- Prefer <file_write path="...">...</file_write>, <replace_symbol path="..." symbol="...">...</replace_symbol>, or <replace_range path="..." start="..." end="...">...</replace_range> with complete raw code (no "... existing code ..." placeholders) for new files or multi-line edits. Prefer patch_hashline (exact line:hash anchors) for small 1-3 line fixes; reserve patch_file for short unique blocks. Syntax is auto-checked.`,
     !isPlan
       ? `- When following an approved plan, update steps via update_plan_step.`
       : '',
@@ -244,6 +250,7 @@ export function packThreeZoneContext(params: {
     : 0;
 
   let tokensSavedByFolding = 0;
+  const foldedReadCalls: Array<{ stepId: string; name: string; arguments: Record<string, unknown> }> = [];
   const messages: OllamaChatMessage[] = [...baseMessages];
 
   for (let i = 0; i < params.steps.length; i++) {
@@ -274,6 +281,7 @@ export function packThreeZoneContext(params: {
           estimateTokens(resultContent) - estimateTokens(folded),
         );
         resultContent = folded;
+        foldedReadCalls.push({ stepId: step.id, name: tc.name, arguments: tc.arguments });
       } else if (tc.isCommandOutput && resultContent.length > 2400) {
         const digested = digestCommandOutput(
           resultContent,
@@ -333,5 +341,6 @@ export function packThreeZoneContext(params: {
     kvPrefixTokens: params.prefixTokens,
     activeContextTokens: totalTokens,
     tokensSavedByFolding,
+    foldedReadCalls,
   };
 }

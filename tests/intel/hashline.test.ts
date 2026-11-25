@@ -109,4 +109,11 @@ describe('Hashline patch engine', () => {
     );
     expect(fuzzy.nextContent).toBe('// header comment\nconst a = 10;\nconst b = 3;\n');
   });
+
+  it('parses file-prefixed and #L anchors and gives actionable hint on empty anchor', () => {
+    expect(parseAnchor('#L42:a7')).toEqual({ line: 42, hash: 'a7' });
+    expect(parseAnchor('main.py:42:a7')).toEqual({ line: 42, hash: 'a7' });
+    expect(parseAnchor('main.py#L42:a7')).toEqual({ line: 42, hash: 'a7' });
+    expect(() => parseAnchor('')).toThrow(/<replace_range/);
+  });
 });
