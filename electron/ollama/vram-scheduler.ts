@@ -30,6 +30,70 @@ export interface RoleCallOptions {
     temperature: number;
     num_predict?: number;
     num_gpu?: number;
+    top_p?: number;
+    min_p?: number;
+    repeat_penalty?: number;
+    presence_penalty?: number;
+    num_batch?: number;
+  };
+}
+
+export function parseModelBillionParams(
+  modelName: string,
+  modelInfo?: OllamaModelInfo,
+): number | null {
+  const paramStr = modelInfo?.parameterSize ?? '';
+  const match =
+    paramStr.match(/(\d+(?:\.\d+)?)\s*([bm])/i) ??
+    modelName.match(/[:-](\d+(?:\.\d+)?)\s*([bm])\b/i);
+  if (!match) return null;
+  const num = Number(match[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return match[2].toLowerCase() === 'm' ? num / 1000 : num;
+}
+
+export function inferModelSamplingProfile(
+  modelName: string,
+  modelInfo: OllamaModelInfo | undefined,
+  thinkEnabled: boolean,
+  baseTemperature: number,
+): {
+  allowThink: boolean;
+  temperature: number;
+  top_p: number;
+  min_p: number;
+  repeat_penalty: number;
+  presence_penalty?: number;
+  num_batch: number;
+} {
+  const lower = modelName.toLowerCase();
+  const paramsB = parseModelBillionParams(modelName, modelInfo);
+  const isTiny = paramsB !== null && paramsB <= 4.2;
+  const isThinkingFamily =
+    lower.includes('qwen3') || lower.includes('deepseek') || lower.includes('r1');
+  const supportsThink = modelInfo?.capabilities.thinking ?? true;
+  // Auto-disable thinking on <=4B models unless explicitly supported and large enough
+  const allowThink = supportsThink && thinkEnabled && !isTiny;
+
+  if (allowThink && isThinkingFamily) {
+    return {
+      allowThink,
+      temperature: Math.max(baseTemperature, 0.25),
+      top_p: 0.95,
+      min_p: 0.05,
+      repeat_penalty: 1.06,
+      presence_penalty: 0.4,
+      num_batch: 512,
+    };
+  }
+
+  return {
+    allowThink,
+    temperature: baseTemperature,
+    top_p: 0.9,
+    min_p: 0.05,
+    repeat_penalty: 1.08,
+    num_batch: 512,
   };
 }
 
@@ -165,19 +229,38 @@ export class VramScheduler {
         options: {
           num_ctx: fastNumCtx,
           temperature: 0.1,
+          top_p: 0.9,
+          repeat_penalty: 1.08,
+          num_batch: 512,
           num_predict: 512,
           ...(pinCpu ? { num_gpu: 0 } : {}),
         },
       };
     }
 
+    const sampling = inferModelSamplingProfile(
+      params.mainModel,
+      params.modelInfo,
+      profile.mainThink || params.effort === 'xhigh',
+      profile.temperature,
+    );
+    const effectiveThink =
+      params.effort === 'low' ? false : sampling.allowThink;
+
     return {
       model: params.mainModel,
-      think: supportsThink ? profile.mainThink : undefined,
+      think: supportsThink ? effectiveThink : undefined,
       keepAlive: -1,
       options: {
         num_ctx: Math.min(profile.numCtx, maxCtx),
-        temperature: profile.temperature,
+        temperature: sampling.temperature,
+        top_p: sampling.top_p,
+        min_p: sampling.min_p,
+        repeat_penalty: sampling.repeat_penalty,
+        ...(sampling.presence_penalty !== undefined
+          ? { presence_penalty: sampling.presence_penalty }
+          : {}),
+        num_batch: sampling.num_batch,
         num_predict: profile.numPredict,
       },
     };

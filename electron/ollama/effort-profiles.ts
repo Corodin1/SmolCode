@@ -8,7 +8,6 @@ export interface EffortProfile {
   mainThink: boolean;
   numCtx: number;
   numPredict: number;
-  maxMainSteps: number;
   stepTimeoutMs: number;
   verifyTimeoutMs: number;
   runFastScout: boolean;
@@ -19,7 +18,6 @@ export interface EffortProfile {
 
 export const EFFORT_SHARED_DEFAULTS = {
   numCtx: 12288,
-  maxMainSteps: 14,
   stepTimeoutMs: 150_000,
   verifyTimeoutMs: 90_000,
   runFastScout: true,

@@ -85,8 +85,24 @@ export function detectChecksForWorkspace(
   if (depth === 'syntax') return [];
   const checks: Array<{ label: string; command: string }> = [];
 
+  const jsTsModified = modifiedFiles.filter((f) =>
+    /\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/i.test(f),
+  );
+  const pyModified = modifiedFiles.filter((f) => f.endsWith('.py'));
+  const rsModified = modifiedFiles.filter((f) => f.endsWith('.rs') || f.endsWith('Cargo.toml'));
+  const hasAnyCodeEdits =
+    modifiedFiles.length === 0 ||
+    jsTsModified.length > 0 ||
+    pyModified.length > 0 ||
+    rsModified.length > 0 ||
+    modifiedFiles.some((f) => /\.(json|css|html)$/i.test(f));
+
+  if (!hasAnyCodeEdits && depth !== 'full-audit') {
+    return [];
+  }
+
   const pkgPath = join(workdir, 'package.json');
-  if (existsSync(pkgPath)) {
+  if (existsSync(pkgPath) && (modifiedFiles.length === 0 || jsTsModified.length > 0 || depth === 'full-audit')) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
         scripts?: Record<string, string>;
@@ -102,7 +118,16 @@ export function detectChecksForWorkspace(
       }
 
       if ((depth === 'typecheck+tests' || depth === 'full-audit') && pkg.scripts?.lint) {
-        checks.push({ label: 'lint', command: 'npm run lint' });
+        if (
+          depth !== 'full-audit' &&
+          jsTsModified.length > 0 &&
+          /\beslint\b/i.test(pkg.scripts.lint)
+        ) {
+          const quotedLint = jsTsModified.slice(0, 12).map((f) => `"${f}"`).join(' ');
+          checks.push({ label: 'lint', command: `npx eslint ${quotedLint}` });
+        } else {
+          checks.push({ label: 'lint', command: 'npm run lint' });
+        }
       }
 
       if ((depth === 'typecheck+tests' || depth === 'full-audit') && pkg.scripts?.test) {
@@ -125,7 +150,7 @@ export function detectChecksForWorkspace(
     }
   }
 
-  if (existsSync(join(workdir, 'Cargo.toml'))) {
+  if (existsSync(join(workdir, 'Cargo.toml')) && (modifiedFiles.length === 0 || rsModified.length > 0 || depth === 'full-audit')) {
     checks.push({ label: 'cargo check', command: 'cargo check --message-format=short' });
     if (depth === 'full-audit') {
       checks.push({ label: 'cargo clippy', command: 'cargo clippy --message-format=short' });
@@ -135,8 +160,10 @@ export function detectChecksForWorkspace(
     }
   }
 
-  if (existsSync(join(workdir, 'pyproject.toml')) || existsSync(join(workdir, 'pytest.ini'))) {
-    const pyModified = modifiedFiles.filter((f) => f.endsWith('.py'));
+  if (
+    (existsSync(join(workdir, 'pyproject.toml')) || existsSync(join(workdir, 'pytest.ini'))) &&
+    (modifiedFiles.length === 0 || pyModified.length > 0 || depth === 'full-audit')
+  ) {
     if (
       (depth === 'typecheck+tests' || depth === 'full-audit') &&
       pyModified.length > 0 &&

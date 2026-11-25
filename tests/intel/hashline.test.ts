@@ -81,4 +81,32 @@ describe('Hashline patch engine', () => {
       'function demo() {\r\n    const val = a * b;\r\n    return val;\r\n}\r\n',
     );
   });
+
+  it('supports L-prefixed anchors, insert_before, and strips copied line:hash| prefixes', () => {
+    const src = 'const a = 1;\nconst b = 2;\n';
+    const h1 = lineHash('const a = 1;');
+    const h2 = lineHash('const b = 2;');
+
+    const res = applyHashlineEdits(src, [
+      {
+        op: 'insert_before',
+        startAnchor: `L1:${h1}`,
+        content: '1:zz| // header comment',
+      },
+      {
+        op: 'replace_range',
+        startAnchor: `line 2:${h2}`,
+        endAnchor: `2:${h2}`,
+        content: `2:${h2}| const b = 3;`,
+      },
+    ]);
+    expect(res.nextContent).toBe('// header comment\nconst a = 1;\nconst b = 3;\n');
+
+    const fuzzy = applyFuzzyPatch(
+      res.nextContent,
+      `2:${h1}| const a = 1;`,
+      `2:${h1}| const a = 10;`,
+    );
+    expect(fuzzy.nextContent).toBe('// header comment\nconst a = 10;\nconst b = 3;\n');
+  });
 });

@@ -19,7 +19,7 @@ import type {
   UserQuestionPrompt,
   WorkingMemoryLedger,
 } from '../../src/shared/types';
-import { buildAstRepoSkeleton } from '../intel/ast-repo-map';
+import { buildAstRepoSkeleton, retrieveRelevantTargets } from '../intel/ast-repo-map';
 import {
   buildImmutableZoneAPrefix,
   buildNonToolFallbackGuide,
@@ -35,7 +35,13 @@ import {
 } from '../intel/repo-indexer';
 import type { TreeSitterService } from '../intel/tree-sitter-service';
 import type { McpManager } from '../mcp/mcp-manager';
-import type { OllamaChatMessage, OllamaClient } from '../ollama/client';
+import {
+  repairAndParseToolArgs,
+  repairJsonString,
+  type OllamaChatMessage,
+  type OllamaClient,
+  type ParsedToolCall,
+} from '../ollama/client';
 import { getEffortProfile } from '../ollama/effort-profiles';
 import type { TurnPriority, VramScheduler } from '../ollama/vram-scheduler';
 import type { SmolCodeStore } from '../store/database';
@@ -75,6 +81,9 @@ interface ZoneACache {
   prefixHash: string;
   prefixTokens: number;
   interactionMode: ThreadRecord['interactionMode'];
+  mainModel: string;
+  agentsHash: string;
+  toolsHash: string;
   mcpHash: string;
   structureVersion: number;
   skillsHash: string;
@@ -118,39 +127,172 @@ function summarizeToolArgs(name: string, args: Record<string, unknown>): string 
 
 function extractFallbackToolCalls(
   content: string,
-): Array<{ name: string; arguments: Record<string, unknown> }> {
-  const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  const tagMatches = content.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g);
-  for (const m of tagMatches) {
-    try {
-      const parsed = JSON.parse(m[1]) as {
-        name?: string;
-        arguments?: Record<string, unknown>;
-      };
-      if (parsed.name) {
-        calls.push({ name: parsed.name, arguments: parsed.arguments ?? {} });
-      }
-    } catch {
-      // Ignore malformed inline tool tag
-    }
-  }
-  if (calls.length > 0) return calls;
+  thinking?: string,
+): ParsedToolCall[] {
+  const calls: ParsedToolCall[] = [];
 
-  const fenceMatches = content.matchAll(/```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```/gi);
-  for (const m of fenceMatches) {
+  const pushJsonTool = (rawJson: string) => {
     try {
-      const parsed = JSON.parse(m[1].trim()) as {
+      const repaired = repairJsonString(rawJson);
+      const parsed = JSON.parse(repaired) as {
         name?: string;
-        arguments?: Record<string, unknown>;
+        arguments?: Record<string, unknown> | string;
       };
-      if (parsed.name && typeof parsed.arguments === 'object') {
-        calls.push({ name: parsed.name, arguments: parsed.arguments ?? {} });
+      if (parsed.name && typeof parsed.name === 'string') {
+        const argParsed = repairAndParseToolArgs(parsed.arguments ?? {});
+        calls.push({
+          name: parsed.name.trim(),
+          arguments: argParsed.args,
+          ...(argParsed.parseError ? { parseError: argParsed.parseError } : {}),
+        });
       }
     } catch {
-      // Ignore non-tool code fences
+      // Ignore malformed inline payload
     }
+  };
+
+  const scanText = (source: string) => {
+    // 1. <tool_call>...</tool_call>
+    for (const m of source.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi)) {
+      pushJsonTool(m[1]);
+    }
+    if (calls.length > 0) return;
+
+    // 2. Unclosed <tool_call>{...} when generation truncated at end
+    const unclosedMatch = source.match(/<tool_call>\s*(\{[\s\S]+)$/i);
+    if (unclosedMatch) {
+      pushJsonTool(unclosedMatch[1]);
+    }
+    if (calls.length > 0) return;
+
+    // 3. Qwen XML format: <function=name><parameter=key>value</parameter>...</function>
+    for (const m of source.matchAll(/<function=([a-zA-Z0-9_-]+)>([\s\S]*?)<\/function>/gi)) {
+      const args: Record<string, unknown> = {};
+      for (const pm of m[2].matchAll(/<parameter=([a-zA-Z0-9_-]+)>([\s\S]*?)<\/parameter>/gi)) {
+        const rawVal = pm[2].trim();
+        if (rawVal.startsWith('{') || rawVal.startsWith('[')) {
+          try {
+            args[pm[1]] = JSON.parse(repairJsonString(rawVal));
+            continue;
+          } catch {
+            // Fall back to string value
+          }
+        }
+        args[pm[1]] = rawVal;
+      }
+      calls.push({ name: m[1].trim(), arguments: args });
+    }
+    if (calls.length > 0) return;
+
+    // 4. Mistral [TOOL_CALLS] [...]
+    const mistralMatch = source.match(/\[TOOL_CALLS\]\s*(\[[\s\S]*?\])/i);
+    if (mistralMatch) {
+      try {
+        const arr = JSON.parse(repairJsonString(mistralMatch[1])) as Array<{
+          name?: string;
+          arguments?: Record<string, unknown> | string;
+        }>;
+        if (Array.isArray(arr)) {
+          for (const item of arr) {
+            if (item?.name) {
+              const argParsed = repairAndParseToolArgs(item.arguments ?? {});
+              calls.push({
+                name: item.name,
+                arguments: argParsed.args,
+                ...(argParsed.parseError ? { parseError: argParsed.parseError } : {}),
+              });
+            }
+          }
+        }
+      } catch {
+        // Ignore malformed Mistral array
+      }
+    }
+    if (calls.length > 0) return;
+
+    // 5. Fenced JSON tool blocks
+    for (const m of source.matchAll(/```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```/gi)) {
+      pushJsonTool(m[1]);
+    }
+    if (calls.length > 0) return;
+
+    // 6. Naked top-level JSON object {"name": "...", "arguments": {...}}
+    const trimmed = source.trim();
+    if (trimmed.startsWith('{') && trimmed.includes('"name"') && trimmed.includes('"arguments"')) {
+      pushJsonTool(trimmed);
+    }
+  };
+
+  scanText(content);
+  if (calls.length === 0 && thinking?.trim()) {
+    scanText(thinking);
   }
   return calls;
+}
+
+function normalizeToolArguments(
+  toolName: string,
+  rawArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const args: Record<string, unknown> = { ...rawArgs };
+
+  if (args.filePath === undefined) {
+    const alias = args.path ?? args.file_path ?? args.file ?? args.targetPath;
+    if (alias !== undefined) args.filePath = alias;
+  }
+  if (toolName === 'move_file') {
+    if (args.fromPath === undefined) {
+      const alias = args.from ?? args.source ?? args.src ?? args.oldPath;
+      if (alias !== undefined) args.fromPath = alias;
+    }
+    if (args.toPath === undefined) {
+      const alias = args.to ?? args.dest ?? args.destination ?? args.newPath;
+      if (alias !== undefined) args.toPath = alias;
+    }
+  }
+  if (toolName === 'read_symbol' && args.symbolName === undefined) {
+    const alias = args.symbol ?? args.name;
+    if (alias !== undefined) args.symbolName = alias;
+  }
+  if (toolName === 'read_range') {
+    if (args.startLine === undefined) {
+      const alias = args.start ?? args.start_line ?? args.fromLine;
+      if (alias !== undefined) args.startLine = Number(alias);
+    } else if (typeof args.startLine === 'string') {
+      args.startLine = Number(args.startLine);
+    }
+    if (args.endLine === undefined) {
+      const alias = args.end ?? args.end_line ?? args.toLine;
+      if (alias !== undefined) args.endLine = Number(alias);
+    } else if (typeof args.endLine === 'string') {
+      args.endLine = Number(args.endLine);
+    }
+  }
+  if (toolName === 'run_command' && args.command === undefined && args.cmd !== undefined) {
+    args.command = args.cmd;
+  }
+  if (
+    (toolName === 'patch_hashline' || toolName === 'patch_file') &&
+    typeof args.edits === 'string'
+  ) {
+    try {
+      const parsed = JSON.parse(repairJsonString(args.edits));
+      if (Array.isArray(parsed)) args.edits = parsed;
+    } catch {
+      // Leave unparseable string to fail cleanly in runPatchFile
+    }
+  }
+  return args;
+}
+
+function buildHeuristicThreadTitle(prompt: string): string {
+  const cleaned = prompt
+    .replace(/\[[^\]]+\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return 'New thread';
+  const words = cleaned.split(' ').slice(0, 6).join(' ');
+  return words.length > 48 ? `${words.slice(0, 45)}...` : words;
 }
 
 export class AgentOrchestrator {
@@ -659,19 +801,32 @@ export class AgentOrchestrator {
       const availableSkills = discoverSkills(params.projectRoot);
       const skillCatalog = formatSkillCatalogForPrompt(availableSkills, 1600);
       const skillsHash = createHash('sha1').update(skillCatalog).digest('hex').slice(0, 12);
+      const agentsPrompt = loadWorkspaceAgentsPrompt(params.projectRoot);
+      const agentsHash = createHash('sha1').update(agentsPrompt).digest('hex').slice(0, 12);
+      const hasSkillChips = params.chips.some((c) => c.kind === 'skill');
 
       const threadTools = buildToolListForThread(thread.interactionMode, mcpServers, {
         webLookupEnabled,
         hasActivePlan,
+        userPrompt: params.userPrompt,
+        hasSkillChips,
       });
+      const toolsHash = createHash('sha1')
+        .update(JSON.stringify(threadTools))
+        .digest('hex')
+        .slice(0, 12);
 
       // Build or reuse KV-Cache-Locked Zone A prefix (refreshed incrementally across turns
-      // only when repo structure, mode, MCP tools, skills catalog, or tool capabilities change)
+      // only when repo structure, mode, model, AGENTS.md, skills, or toolset change).
+      // Repo skeleton in Zone A stays unseeded so Turn 1..N share the exact same prefix.
       let zoneA = this.zoneACacheByThread.get(thread.id);
       let kvPrefixReused = false;
       if (
         !zoneA ||
         zoneA.interactionMode !== thread.interactionMode ||
+        zoneA.mainModel !== resolvedMainModel ||
+        zoneA.agentsHash !== agentsHash ||
+        zoneA.toolsHash !== toolsHash ||
         zoneA.mcpHash !== mcpHash ||
         zoneA.structureVersion !== structureVersion ||
         zoneA.skillsHash !== skillsHash ||
@@ -679,8 +834,7 @@ export class AgentOrchestrator {
         zoneA.toolsCapable !== toolsCapable ||
         zoneA.hasActivePlan !== hasActivePlan
       ) {
-        const agentsPrompt = loadWorkspaceAgentsPrompt(params.projectRoot);
-        const skeleton = buildAstRepoSkeleton(index, [...seedFiles], 4600);
+        const skeleton = buildAstRepoSkeleton(index, [], 4600);
         tokensSavedByAst += skeleton.estimatedTokensSaved;
         const nonToolFallbackGuide = toolsCapable
           ? undefined
@@ -696,6 +850,9 @@ export class AgentOrchestrator {
         zoneA = {
           ...built,
           interactionMode: thread.interactionMode,
+          mainModel: resolvedMainModel,
+          agentsHash,
+          toolsHash,
           mcpHash,
           structureVersion,
           skillsHash,
@@ -844,12 +1001,74 @@ export class AgentOrchestrator {
           );
         }
       }
+      // Stage 1.5: Deterministic AST + lexical pre-retrieval (0 LLM tokens, <5ms)
+      let prefetchedChars = prefetchedSlices.reduce((sum, s) => sum + s.length, 0);
+      if (prefetchedFiles.size < 3 && prefetchedChars < 4800 && index.files.size > 0) {
+        const autoTargets = retrieveRelevantTargets(
+          index,
+          params.userPrompt,
+          [...seedFiles],
+          3,
+        );
+        for (const tgt of autoTargets) {
+          if (prefetchedFiles.has(tgt.filePath) || prefetchedChars >= 4800) continue;
+          const tAuto = Date.now();
+          try {
+            if (tgt.symbolName) {
+              const res = runReadSymbol(index, this.indexer, tgt.filePath, tgt.symbolName);
+              if (prefetchedChars + res.output.length <= 5400) {
+                prefetchedSlices.push(res.output);
+                prefetchedChars += res.output.length;
+                tokensSavedByAst += res.tokensSavedApprox;
+                prefetchedFiles.add(tgt.filePath);
+                ledger.inspectedSymbols.push(`${tgt.filePath}::${tgt.symbolName}`);
+                emitPrefetchTool(
+                  'read_symbol',
+                  tgt.filePath,
+                  `${tgt.filePath}::${tgt.symbolName}`,
+                  res.output,
+                  Date.now() - tAuto,
+                );
+              }
+            } else {
+              const start = Math.max(1, tgt.startLine ?? 1);
+              const end = Math.min(start + 75, tgt.endLine ?? start + 75);
+              const res = runReadRange(workdir, tgt.filePath, start, end);
+              if (prefetchedChars + res.output.length <= 5400) {
+                prefetchedSlices.push(res.output);
+                prefetchedChars += res.output.length;
+                tokensSavedByAst += res.tokensSavedApprox;
+                prefetchedFiles.add(tgt.filePath);
+                ledger.inspectedSymbols.push(`${tgt.filePath}:L${start}-${end}`);
+                emitPrefetchTool(
+                  'read_range',
+                  tgt.filePath,
+                  `${tgt.filePath} L${start}-${end}`,
+                  res.output,
+                  Date.now() - tAuto,
+                );
+              }
+            }
+          } catch {
+            // Ignore transient read errors
+          }
+        }
+      }
       const prefetchMs = Date.now() - tPrefetch;
 
       // ================================================================
-      // STAGE 2: Fast Scout Burst (Fast Model, JSON schema, zero VRAM ping-pong)
+      // STAGE 2: Fast Scout Burst (only when distinct fast model is used and local retrieval < 2 slices)
       // ================================================================
-      if (profile.runFastScout && resolvedFastModel && prefetchedSlices.length === 0 && index.files.size > 0) {
+      const useDistinctFastModel =
+        Boolean(resolvedFastModel) &&
+        (resolvedFastModel !== resolvedMainModel ||
+          settings.vramScheduleMode === 'strict-role-split');
+      if (
+        profile.runFastScout &&
+        useDistinctFastModel &&
+        prefetchedSlices.length < 2 &&
+        index.files.size > 0
+      ) {
         this.setThreadStatus(thread.id, 'scouting');
         const tScout = Date.now();
         const scoutToolId = randomUUID();
@@ -1025,31 +1244,33 @@ export class AgentOrchestrator {
       let finalAnswer = '';
       let fullThinking = '';
       let activeContextTokens = 0;
-      let stageBAttempted = false;
+      let lastVerifiedEpoch = -1;
+      let consecutiveThinkExhaustions = 0;
+      let turnThinkOverride: boolean | undefined;
+      let anyColdReload = false;
+      let stepCount = 0;
 
       const tThink = Date.now();
 
-      for (let stepIdx = 0; stepIdx < profile.maxMainSteps; stepIdx++) {
-        if (ac.signal.aborted) break;
+      while (!ac.signal.aborted) {
+        stepCount += 1;
 
-        // Drain mid-turn steering notes if user steered while model was working
+        // Drain mid-turn steering notes at the message tail so prefix KV cache stays intact
         const steered = this.steeringQueues.get(thread.id);
-        let effectivePrompt = formattedUserPrompt;
-        if (steered && steered.length > 0) {
-          effectivePrompt = `${formattedUserPrompt}\n\n[User Steering Update]:\n${steered.join('\n')}`;
-        }
+        const steeringNotes = steered && steered.length > 0 ? [...steered] : undefined;
 
         const packed = packThreeZoneContext({
           immutableSystemPrompt: zoneA.systemPrompt,
           prefixHash: zoneA.prefixHash,
           prefixTokens: zoneA.prefixTokens,
-          userPrompt: effectivePrompt,
+          userPrompt: formattedUserPrompt,
           prefetchedContext: prefetchedSlices.join('\n\n'),
           images: mainModelInfo?.capabilities.vision ? images : undefined,
           effortGuidance: profile.guidanceHint,
           ledger,
           steps,
           numCtx: mainOpts.options.num_ctx,
+          steeringNotes,
         });
 
         activeContextTokens = packed.activeContextTokens;
@@ -1057,12 +1278,12 @@ export class AgentOrchestrator {
 
         let stepThinking = '';
 
-        // Keep think flag consistent across all steps of the Main Thinker loop so
-        // Ollama's prompt template & KV prefix cache remain 100% invariant step-to-step.
+        // Keep think flag consistent across all steps unless thinking exhausted twice.
+        const effectiveThink = turnThinkOverride ?? mainOpts.think;
         const stepSignal = AbortSignal.any([ac.signal, AbortSignal.timeout(profile.stepTimeoutMs)]);
         const resp = await this.ollama.chatStream({
           model: mainOpts.model || resolvedMainModel,
-          think: mainOpts.think,
+          think: effectiveThink,
           keep_alive: mainOpts.keepAlive,
           options: mainOpts.options,
           ...(toolsCapable ? { tools: threadTools } : {}),
@@ -1092,11 +1313,15 @@ export class AgentOrchestrator {
         totalPromptEvalMs += resp.promptEvalDurationMs;
         totalEvalTokens += resp.evalCount;
         totalEvalMs += resp.evalDurationMs;
+        if (resp.loadDurationMs > 250 && stepCount > 1) {
+          anyColdReload = true;
+        }
 
-        let toolCalls =
+        let effectiveContent = resp.content;
+        let toolCalls: ParsedToolCall[] =
           resp.toolCalls.length > 0
             ? resp.toolCalls
-            : extractFallbackToolCalls(resp.content);
+            : extractFallbackToolCalls(resp.content, resp.thinking);
 
         // Recovery guard: if a thinking model exhausted num_predict inside <think>
         // before emitting content or tool calls, immediately nudge with think:false.
@@ -1105,6 +1330,10 @@ export class AgentOrchestrator {
           resp.content.trim().length === 0 &&
           resp.thinking.trim().length > 0
         ) {
+          consecutiveThinkExhaustions += 1;
+          if (consecutiveThinkExhaustions >= 2 && effectiveThink) {
+            turnThinkOverride = false;
+          }
           const nudgeSignal = AbortSignal.any([
             ac.signal,
             AbortSignal.timeout(Math.min(60_000, profile.stepTimeoutMs)),
@@ -1136,24 +1365,28 @@ export class AgentOrchestrator {
           totalPromptEvalMs += nudgeResp.promptEvalDurationMs;
           totalEvalTokens += nudgeResp.evalCount;
           totalEvalMs += nudgeResp.evalDurationMs;
+          effectiveContent = nudgeResp.content || resp.content;
           toolCalls =
             nudgeResp.toolCalls.length > 0
               ? nudgeResp.toolCalls
-              : extractFallbackToolCalls(nudgeResp.content);
+              : extractFallbackToolCalls(nudgeResp.content, nudgeResp.thinking);
           if (toolCalls.length === 0) {
             finalAnswer = nudgeResp.content.trim();
           }
+        } else {
+          consecutiveThinkExhaustions = 0;
         }
 
         if (toolCalls.length === 0) {
-          if (!finalAnswer) finalAnswer = resp.content.trim();
-          // Run Stage B verification automatically if files were modified
+          if (!finalAnswer) finalAnswer = effectiveContent.trim();
+          // Run Stage B verification automatically if files were modified since last verify
+          const currentEpoch = loopGuard.getMutationEpoch();
           if (
             ledger.modifiedFiles.length > 0 &&
-            !stageBAttempted &&
+            lastVerifiedEpoch !== currentEpoch &&
             profile.verifyDepth !== 'syntax'
           ) {
-            stageBAttempted = true;
+            lastVerifiedEpoch = currentEpoch;
             const verifyPassed = await this.runAndRecordStageB({
               thread,
               workdir,
@@ -1164,7 +1397,7 @@ export class AgentOrchestrator {
               ledger,
               toolLogs,
               steps,
-              assistantContent: resp.content,
+              assistantContent: effectiveContent,
               signal: ac.signal,
               onVerifyTime: (ms) => {
                 verifyMs += ms;
@@ -1184,26 +1417,36 @@ export class AgentOrchestrator {
 
         const stepItem: StepHistoryItem = {
           id: randomUUID(),
-          assistantContent: resp.content,
+          assistantContent: effectiveContent,
           assistantThinking: stepThinking,
           toolCalls: [],
         };
 
         let finishRequested: { summary: string } | null = null;
+        let stepHadError = false;
+
+        // Normalize arguments before LoopGuard & execution
+        const normalizedCalls = toolCalls.map((tc) => ({
+          ...tc,
+          arguments: normalizeToolArguments(tc.name, tc.arguments),
+        }));
 
         // Partition consecutive safe read-only calls into parallel batches while preserving
         // deterministic ordering in toolLogs and stepItem.toolCalls.
         let cursor = 0;
-        while (cursor < toolCalls.length && !finalAnswer) {
-          const isParallelBatch = READ_ONLY_TOOL_NAMES.has(toolCalls[cursor].name);
+        while (cursor < normalizedCalls.length && !finalAnswer) {
+          const isParallelBatch =
+            READ_ONLY_TOOL_NAMES.has(normalizedCalls[cursor].name) &&
+            !normalizedCalls[cursor].parseError;
 
           if (isParallelBatch) {
-            const batch: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+            const batch: ParsedToolCall[] = [];
             while (
-              cursor < toolCalls.length &&
-              READ_ONLY_TOOL_NAMES.has(toolCalls[cursor].name)
+              cursor < normalizedCalls.length &&
+              READ_ONLY_TOOL_NAMES.has(normalizedCalls[cursor].name) &&
+              !normalizedCalls[cursor].parseError
             ) {
-              batch.push(toolCalls[cursor]);
+              batch.push(normalizedCalls[cursor]);
               cursor += 1;
             }
 
@@ -1260,6 +1503,7 @@ export class AgentOrchestrator {
             for (const res of batchResults) {
               const { tc, guard, logEntry, startedAt } = res.item;
               if (res.kind === 'guard') {
+                stepHadError = true;
                 logEntry.status = 'error';
                 logEntry.resultPreview = guard.reason;
                 logEntry.durationMs = Date.now() - startedAt;
@@ -1279,24 +1523,36 @@ export class AgentOrchestrator {
                   result: guard.reason ?? 'Pivot required.',
                 });
               } else if (res.kind === 'err') {
+                stepHadError = true;
                 const errMsg =
                   res.error instanceof Error ? res.error.message : String(res.error);
                 logEntry.status = 'error';
                 logEntry.durationMs = Date.now() - startedAt;
                 logEntry.resultPreview = errMsg.slice(0, 200);
+                ledger.activeErrors = [errMsg.slice(0, 400)];
                 this.emit({
                   type: 'tool_update',
                   threadId: thread.id,
                   turnId: assistantTurn.id,
                   tool: { ...logEntry },
                 });
+                const outcomeCheck = loopGuard.recordOutcome(
+                  `${tc.name}:${typeof tc.arguments.filePath === 'string' ? tc.arguments.filePath : ''}`,
+                  true,
+                  errMsg,
+                );
                 stepItem.toolCalls.push({
                   name: tc.name,
                   arguments: tc.arguments,
                   result: `Tool error: ${errMsg}`,
                 });
+                if (outcomeCheck.action === 'halt') {
+                  finalAnswer = outcomeCheck.reason ?? 'Stopped after repeated errors.';
+                  break;
+                }
               } else {
                 const { execResult } = res;
+                if (execResult.isError || execResult.denied) stepHadError = true;
                 logEntry.status = execResult.denied
                   ? 'denied'
                   : execResult.isError
@@ -1332,8 +1588,41 @@ export class AgentOrchestrator {
             continue;
           }
 
-          const tc = toolCalls[cursor];
+          const tc = normalizedCalls[cursor];
           cursor += 1;
+
+          // Surface malformed JSON tool arguments clearly instead of executing {}
+          if (tc.parseError) {
+            stepHadError = true;
+            const logEntry: ToolCallLog = {
+              id: randomUUID(),
+              toolName: tc.name,
+              summary: 'Malformed JSON arguments',
+              argsPreview: tc.parseError.slice(0, 140),
+              resultPreview: tc.parseError.slice(0, 200),
+              status: 'error',
+              durationMs: 0,
+            };
+            toolLogs.push(logEntry);
+            this.emit({
+              type: 'tool_update',
+              threadId: thread.id,
+              turnId: assistantTurn.id,
+              tool: logEntry,
+            });
+            const outcomeCheck = loopGuard.recordOutcome(`json:${tc.name}`, true, tc.parseError);
+            stepItem.toolCalls.push({
+              name: tc.name,
+              arguments: tc.arguments,
+              result: `Tool argument JSON parse error for "${tc.name}": ${tc.parseError}. Re-emit valid JSON matching the tool schema.`,
+            });
+            if (outcomeCheck.action === 'halt') {
+              finalAnswer = outcomeCheck.reason ?? 'Stopped after repeated malformed tool JSON.';
+              break;
+            }
+            continue;
+          }
+
           const guard = loopGuard.recordToolAttempt(tc.name, tc.arguments);
           const logId = randomUUID();
           const logEntry: ToolCallLog = {
@@ -1358,6 +1647,7 @@ export class AgentOrchestrator {
           const tTool = Date.now();
 
           if (guard.action === 'halt') {
+            stepHadError = true;
             logEntry.status = 'error';
             logEntry.resultPreview = guard.reason;
             logEntry.durationMs = Date.now() - tTool;
@@ -1372,6 +1662,7 @@ export class AgentOrchestrator {
           }
 
           if (guard.action === 'pivot') {
+            stepHadError = true;
             logEntry.status = 'error';
             logEntry.resultPreview = guard.reason;
             logEntry.durationMs = Date.now() - tTool;
@@ -1405,6 +1696,7 @@ export class AgentOrchestrator {
               signal: ac.signal,
             });
 
+            if (execResult.isError || execResult.denied) stepHadError = true;
             logEntry.status = execResult.denied ? 'denied' : execResult.isError ? 'error' : 'ok';
             logEntry.durationMs = Date.now() - tTool;
             logEntry.resultPreview = execResult.output.slice(0, 200);
@@ -1447,21 +1739,32 @@ export class AgentOrchestrator {
               exitCode: execResult.exitCode,
             });
           } catch (error) {
+            stepHadError = true;
             const errMsg = error instanceof Error ? error.message : String(error);
             logEntry.status = 'error';
             logEntry.durationMs = Date.now() - tTool;
             logEntry.resultPreview = errMsg.slice(0, 200);
+            ledger.activeErrors = [errMsg.slice(0, 400)];
             this.emit({
               type: 'tool_update',
               threadId: thread.id,
               turnId: assistantTurn.id,
               tool: { ...logEntry },
             });
+            const outcomeCheck = loopGuard.recordOutcome(
+              `${tc.name}:${typeof tc.arguments.filePath === 'string' ? tc.arguments.filePath : ''}`,
+              true,
+              errMsg,
+            );
             stepItem.toolCalls.push({
               name: tc.name,
               arguments: tc.arguments,
               result: `Tool error: ${errMsg}`,
             });
+            if (outcomeCheck.action === 'halt') {
+              finalAnswer = outcomeCheck.reason ?? 'Stopped after repeated errors.';
+              break;
+            }
           }
         }
 
@@ -1469,13 +1772,14 @@ export class AgentOrchestrator {
 
         if (finalAnswer) break;
 
-        if (finishRequested) {
+        if (finishRequested && !stepHadError) {
+          const currentEpoch = loopGuard.getMutationEpoch();
           if (
             ledger.modifiedFiles.length > 0 &&
-            !stageBAttempted &&
+            lastVerifiedEpoch !== currentEpoch &&
             profile.verifyDepth !== 'syntax'
           ) {
-            stageBAttempted = true;
+            lastVerifiedEpoch = currentEpoch;
             const verifyPassed = await this.runAndRecordStageB({
               thread,
               workdir,
@@ -1509,7 +1813,7 @@ export class AgentOrchestrator {
       if (!finalAnswer) {
         finalAnswer = ac.signal.aborted
           ? 'Turn stopped by user.'
-          : `Reached step limit (${profile.maxMainSteps}) for ${profile.label} effort. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
+          : `Completed ${stepCount} steps. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
       }
 
       // ================================================================
@@ -1517,20 +1821,26 @@ export class AgentOrchestrator {
       // ================================================================
       let threadTitle: string | undefined;
       if (thread.title === 'New thread') {
-        threadTitle = await this.generateThreadTitle(
-          resolvedFastModel,
-          resolvedMainModel,
-          thread.effort,
-          params.userPrompt,
-          settings,
-          fastModelInfo,
-        );
+        if (!useDistinctFastModel) {
+          // Single-model setup: derive heuristic title locally to avoid evicting Main's KV cache
+          threadTitle = buildHeuristicThreadTitle(params.userPrompt);
+        } else {
+          threadTitle = await this.generateThreadTitle(
+            resolvedFastModel,
+            resolvedMainModel,
+            thread.effort,
+            params.userPrompt,
+            settings,
+            fastModelInfo,
+          );
+        }
         this.store.updateThread(thread.id, { title: threadTitle });
       }
 
       const evalPerSec =
         totalEvalMs > 0 ? Number(((totalEvalTokens / totalEvalMs) * 1000).toFixed(1)) : 0;
-      const kvCacheHitRate = kvPrefixReused
+      const effectivePrefixReused = (kvPrefixReused || stepCount > 1) && !anyColdReload;
+      const kvCacheHitRate = effectivePrefixReused
         ? Math.min(0.98, Number((zoneA.prefixTokens / Math.max(1, activeContextTokens)).toFixed(2)))
         : 0;
 
@@ -2114,7 +2424,9 @@ export class AgentOrchestrator {
       const query = String(args.query ?? '');
       const pathPrefix = args.pathPrefix ? String(args.pathPrefix) : undefined;
       return {
-        output: runRepoSearch(index, query, pathPrefix),
+        output: runRepoSearch(index, query, pathPrefix, 30, (relPath) =>
+          this.indexer.getCachedFileLines(workdir, relPath),
+        ),
         isReadOnlySlice: true,
       };
     }
@@ -2226,20 +2538,27 @@ export class AgentOrchestrator {
         readOnly: thread.approvalPolicy === 'read-only',
         allowOutsideRoot: gate.allowOutsideRoot,
       });
-      if (res.inside && !ledger.modifiedFiles.includes(res.relPath)) {
+      if (res.ok && res.inside && !ledger.modifiedFiles.includes(res.relPath)) {
         ledger.modifiedFiles.push(res.relPath);
       }
-      loopGuard.invalidateOnMutation(res.relPath);
-      if (res.inside) {
-        this.indexer.markDirty(workdir, res.relPath, true);
-        const parsed = await this.treeSitter.extractSymbolsAndImports(res.relPath, content);
-        index.files.set(res.relPath, {
-          relPath: res.relPath,
-          mtimeMs: Date.now(),
-          symbols: parsed.symbols,
-          imports: parsed.imports,
-          lineCount: res.linesAdded,
-        });
+      if (!res.syntaxOk) {
+        ledger.activeErrors = [res.output];
+      } else {
+        ledger.activeErrors = [];
+      }
+      if (res.ok) {
+        loopGuard.invalidateOnMutation(res.relPath);
+        if (res.inside) {
+          this.indexer.markDirty(workdir, res.relPath, true);
+          const parsed = await this.treeSitter.extractSymbolsAndImports(res.relPath, content);
+          index.files.set(res.relPath, {
+            relPath: res.relPath,
+            mtimeMs: Date.now(),
+            symbols: parsed.symbols,
+            imports: parsed.imports,
+            lineCount: res.linesAdded,
+          });
+        }
       }
       return {
         output: res.output,

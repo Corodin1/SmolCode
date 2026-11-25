@@ -235,6 +235,7 @@ export function runRepoSearch(
   query: string,
   pathPrefix?: string,
   maxHits = 30,
+  readLines?: (relPath: string) => string[] | null,
 ): string {
   const q = query.trim();
   if (!q) return 'Empty search query.';
@@ -260,10 +261,11 @@ export function runRepoSearch(
       }
     }
 
-    // Search file contents
+    // Search file contents (preferring cached lines from RepoIndexer)
     try {
-      const content = readFileSync(join(index.workdir, relPath), 'utf8');
-      const lines = content.split(/\r?\n/);
+      const lines =
+        readLines?.(relPath) ??
+        readFileSync(join(index.workdir, relPath), 'utf8').split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         if (regex.test(lines[i])) {
           hits.push(`${relPath}:${i + 1}:${lineHash(lines[i])}| ${lines[i].trim().slice(0, 140)}`);
@@ -351,7 +353,9 @@ export function normalizeHashlineEdits(rawEdits: unknown[]): HashlineEdit[] {
     const end = item.endAnchor ?? item.end_anchor ?? item.end;
     const rawOp = String(item.op ?? item.operation ?? 'replace_range');
     const op: HashlineEdit['op'] =
-      rawOp === 'insert_after' || rawOp === 'delete_range' ? rawOp : 'replace_range';
+      rawOp === 'insert_after' || rawOp === 'insert_before' || rawOp === 'delete_range'
+        ? rawOp
+        : 'replace_range';
     return {
       op,
       startAnchor: start !== undefined ? String(start) : '',
@@ -449,6 +453,7 @@ export async function runCreateFile(params: {
   readOnly: boolean;
   allowOutsideRoot?: boolean;
 }): Promise<{
+  ok: boolean;
   relPath: string;
   absPath: string;
   inside: boolean;
@@ -464,16 +469,31 @@ export async function runCreateFile(params: {
     throw new Error(`Refusing create_file outside active workspace: ${params.filePath}`);
   }
   const displayPath = inside ? relPath : absPath;
+  const syntax = await verifySyntaxGate(params.treeSitter, displayPath, params.content);
+  if (!syntax.ok) {
+    return {
+      ok: false,
+      relPath: displayPath,
+      absPath,
+      inside,
+      linesAdded: 0,
+      syntaxOk: false,
+      output: `Create rejected (not written) due to syntax errors:\n${syntax.errorsText}\nFix syntax and retry.`,
+    };
+  }
   mkdirSync(dirname(absPath), { recursive: true });
   writeFileSync(absPath, params.content, 'utf8');
 
   const linesAdded = params.content.split(/\r?\n/).length;
-  const syntax = await verifySyntaxGate(params.treeSitter, displayPath, params.content);
-  const output = syntax.ok
-    ? `Created ${displayPath} (${linesAdded} lines), syntax check passed.`
-    : `Created ${displayPath} (${linesAdded} lines), SYNTAX ERRORS DETECTED:\n${syntax.errorsText}`;
-
-  return { relPath: displayPath, absPath, inside, linesAdded, syntaxOk: syntax.ok, output };
+  return {
+    ok: true,
+    relPath: displayPath,
+    absPath,
+    inside,
+    linesAdded,
+    syntaxOk: true,
+    output: `Created ${displayPath} (${linesAdded} lines), syntax check passed.`,
+  };
 }
 
 export function runDeleteFile(params: {

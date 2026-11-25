@@ -1,9 +1,11 @@
+import { createServer, type Server } from 'node:http';
 import { exec } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { AgentOrchestrator } from '../electron/agent/orchestrator';
+import { lineHash } from '../electron/intel/hashline';
 import { TreeSitterService } from '../electron/intel/tree-sitter-service';
 import { OllamaClient } from '../electron/ollama/client';
 import { VramScheduler } from '../electron/ollama/vram-scheduler';
@@ -148,8 +150,176 @@ async function runSmolCodeTask(params: {
   };
 }
 
+async function runMockHarnessBenchmarks() {
+  console.log('SmolCode Small-Model (4B-9B) Harness Offline Regression Benchmark (--mock)\n');
+  const dir = mkdtempSync(join(tmpdir(), 'smolcode-bench-mock-'));
+  const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-bench-mock-blobs-'));
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  writeFileSync(
+    join(dir, 'src/pricing.mjs'),
+    'export function calc(total, tax) {\n  return total - tax;\n}\n',
+    'utf8',
+  );
+  const targetHash = lineHash('  return total - tax;');
+  const seenSystemPrompts: string[] = [];
+  let step = 0;
+
+  const server: Server = createServer((req, res) => {
+    if (req.url === '/api/show') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ capabilities: ['tools'] }));
+      return;
+    }
+    if (req.url === '/api/chat') {
+      let body = '';
+      req.on('data', (c) => (body += String(c)));
+      req.on('end', () => {
+        const parsed = JSON.parse(body || '{}') as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        seenSystemPrompts.push(parsed.messages[0]?.content ?? '');
+        step += 1;
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+
+        if (step === 1) {
+          // Malformed JSON + path alias + copied line:hash| prefix
+          res.write(
+            JSON.stringify({
+              message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                  {
+                    function: {
+                      name: 'patch_hashline',
+                      arguments: `{"path":"src/pricing.mjs","edits":[{"op":"replace_range","startAnchor":"L2:${targetHash}","content":"2:${targetHash}|   return total + tax;\n",}]}`,
+                    },
+                  },
+                ],
+              },
+              done: false,
+            }) + '\n',
+          );
+        } else if (step === 2) {
+          res.write(
+            JSON.stringify({
+              message: {
+                role: 'assistant',
+                content: '<function=finish_turn><parameter=summary>Fixed tax sign.</parameter></function>',
+              },
+              done: false,
+            }) + '\n',
+          );
+        } else {
+          res.write(
+            JSON.stringify({
+              message: { role: 'assistant', content: 'Turn 2 confirmed.' },
+              done: false,
+            }) + '\n',
+          );
+        }
+        res.write(
+          JSON.stringify({
+            done: true,
+            prompt_eval_count: 320,
+            prompt_eval_duration: 20_000_000,
+            eval_count: 24,
+            eval_duration: 40_000_000,
+            load_duration: 0,
+          }) + '\n',
+        );
+        res.end();
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'qwen3.5:9b',
+      defaultFastModel: 'qwen3.5:9b',
+    });
+    const snapshots = new SnapshotManager(store, blobDir);
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      snapshots,
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+    const proj = store.upsertProject({ name: 'mock-bench', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'New thread',
+      mainModel: 'qwen3.5:9b',
+      fastModel: 'qwen3.5:9b',
+      effort: 'medium',
+      approvalPolicy: 'full-access',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    const t0 = Date.now();
+    await orch.runUserTurn({ threadId: thread.id, content: 'Fix calc in src/pricing.mjs' });
+    await orch.runUserTurn({ threadId: thread.id, content: 'Confirm calc' });
+    const elapsedMs = Date.now() - t0;
+
+    const patchedOk = readFileSync(join(dir, 'src/pricing.mjs'), 'utf8').includes('total + tax');
+    const zoneAInvariant =
+      seenSystemPrompts.length === 3 &&
+      seenSystemPrompts[0] === seenSystemPrompts[1] &&
+      seenSystemPrompts[1] === seenSystemPrompts[2];
+    const turns = store.listTurns(thread.id).filter((t) => t.role === 'assistant');
+    const turn2KvHit = turns[1]?.telemetry?.kvCacheHitRate ?? 0;
+
+    console.table([
+      {
+        Check: 'json-repair + alias + prefix-strip',
+        Result: patchedOk ? 'PASS' : 'FAIL',
+        Detail: patchedOk ? 'Applied cleanly in 1 step' : 'Patch failed',
+      },
+      {
+        Check: 'Zone A cross-turn KV invariance',
+        Result: zoneAInvariant ? 'PASS' : 'FAIL',
+        Detail: `Turn2 KV rate=${Math.round(turn2KvHit * 100)}%`,
+      },
+      {
+        Check: 'Total 2-turn harness overhead',
+        Result: 'PASS',
+        Detail: `${elapsedMs}ms`,
+      },
+    ]);
+
+    if (!patchedOk || !zoneAInvariant) {
+      process.exitCode = 1;
+    }
+    orch.dispose();
+    store.close();
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(blobDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args.includes('--mock')) {
+    await runMockHarnessBenchmarks();
+    return;
+  }
   const modelFlagIdx = args.indexOf('--model');
   const mainModel =
     modelFlagIdx !== -1 && args[modelFlagIdx + 1]

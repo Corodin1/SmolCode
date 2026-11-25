@@ -59,21 +59,18 @@ export function buildImmutableZoneAPrefix(params: {
 }): { systemPrompt: string; prefixHash: string; prefixTokens: number } {
   const isPlan = params.interactionMode === 'plan';
   const parts = [
-    `You are SmolCode, an autonomous software engineering agent operating inside the user's local workspace.`,
+    `You are SmolCode, an autonomous local coding agent.`,
     `Rules:`,
-    `- If Prefetched Context Slices already show the target file or skill, inspect or act directly without redundant re-reads.`,
-    `- Use list_dir and find_files to explore folder layout or non-code config/asset files; use web_lookup when external docs or APIs are needed.`,
-    `- Check Available Skills below: if a skill matches the task domain, call read_skill(name) first to load its instructions.`,
+    `- Act directly on Prefetched Context Slices without redundant re-reads.`,
+    `- Use read_symbol / read_range before editing; use list_dir / find_files for layout or non-code files.`,
+    `- If Available Skills lists a matching skill, call read_skill(name) first.`,
     isPlan
-      ? `- PLAN MODE IS ACTIVE: Do not modify workspace files. Explore the codebase read-only, use request_user_input if key design choices are ambiguous, and call propose_plan with a crisp step-by-step plan before finish_turn.`
-      : `- Prefer patch_hashline (using exact line:hash anchors from read_range, read_symbol, or repo_search) for multi-hunk or line-precise edits; reserve patch_file for short, unique single-block replacements. Edits are syntax-checked automatically.`,
+      ? `- PLAN MODE (read-only): Explore without modifying files, clarify ambiguity with request_user_input, and call propose_plan before finish_turn.`
+      : `- Prefer patch_hashline (exact line:hash anchors) for edits; reserve patch_file for short unique blocks. Syntax is auto-checked.`,
     !isPlan
-      ? `- When implementing an approved plan, call update_plan_step to mark steps in_progress and done as you progress.`
+      ? `- When following an approved plan, update steps via update_plan_step.`
       : '',
-    !isPlan
-      ? `- When the user asks to create a skill—or when you establish a reusable project workflow worth preserving—use save_skill (prefer scope="repo" for project conventions, scope="global" for general workflows; load skill-creator for complex multi-file skills).`
-      : '',
-    `- Run verification commands when appropriate, then call finish_turn.`,
+    `- Verify changes when appropriate, then call finish_turn.`,
   ].filter(Boolean);
 
   if (params.agentsPrompt.trim()) {
@@ -193,14 +190,15 @@ export function packThreeZoneContext(params: {
   ledger: WorkingMemoryLedger;
   steps: StepHistoryItem[];
   numCtx: number;
+  steeringNotes?: string[];
 }): PackedContextResult {
-  const messages: OllamaChatMessage[] = [
+  const baseMessages: OllamaChatMessage[] = [
     // ZONE A: Immutable KV-cache-locked system prefix
     {
       role: 'system',
       content: params.immutableSystemPrompt,
     },
-    // ZONE A/User Turn Seed (also invariant within the turn!)
+    // Turn seed (kept strictly invariant within the turn; steering appends at tail)
     {
       role: 'user',
       content: [
@@ -216,13 +214,41 @@ export function packThreeZoneContext(params: {
     },
   ];
 
-  // ZONE C: Active sliding tail (last 3 steps verbatim; earlier steps folded)
+  // Estimate raw append-only token footprint first so we NEVER break Ollama's
+  // prefix KV cache prematurely while under the soft VRAM watermark.
+  const softBudget = Math.floor(params.numCtx * 0.70);
+  const hardBudget = Math.floor(params.numCtx * 0.82);
+
+  let rawTokens =
+    params.prefixTokens +
+    estimateTokens(baseMessages[1].content);
+  for (const step of params.steps) {
+    rawTokens += estimateTokens(step.assistantContent);
+    for (const tc of step.toolCalls) {
+      rawTokens += estimateTokens(tc.result) + 24;
+    }
+  }
+  for (const note of params.steeringNotes ?? []) {
+    rawTokens += estimateTokens(note) + 16;
+  }
+
+  // Only fold once context exceeds softBudget; fold in 4-step epochs so subsequent
+  // steps remain strictly append-only until the next epoch boundary.
+  const needsCompaction = rawTokens > softBudget && params.steps.length >= 4;
+  const foldUntilStep = needsCompaction
+    ? Math.max(
+        0,
+        Math.floor(Math.max(0, params.steps.length - 2) / 4) * 4 ||
+          Math.max(0, params.steps.length - 3),
+      )
+    : 0;
+
   let tokensSavedByFolding = 0;
-  const keepVerbatimFrom = Math.max(0, params.steps.length - 3);
+  const messages: OllamaChatMessage[] = [...baseMessages];
 
   for (let i = 0; i < params.steps.length; i++) {
     const step = params.steps[i];
-    const isOld = i < keepVerbatimFrom;
+    const isFoldedEpoch = i < foldUntilStep;
 
     messages.push({
       role: 'assistant',
@@ -239,7 +265,7 @@ export function packThreeZoneContext(params: {
     for (const tc of step.toolCalls) {
       let resultContent = tc.result;
 
-      if (isOld && tc.isReadOnlySlice && resultContent.length > 260) {
+      if (isFoldedEpoch && tc.isReadOnlySlice && resultContent.length > 260) {
         const target =
           String(tc.arguments.filePath ?? tc.arguments.path ?? tc.arguments.query ?? 'target');
         const folded = `[Folded ${tc.name}(${target}) — already reflected in Working Memory Ledger; re-read if needed]`;
@@ -249,7 +275,11 @@ export function packThreeZoneContext(params: {
         );
         resultContent = folded;
       } else if (tc.isCommandOutput && resultContent.length > 2400) {
-        const digested = digestCommandOutput(resultContent, tc.exitCode ?? 0, isOld ? 900 : 2200);
+        const digested = digestCommandOutput(
+          resultContent,
+          tc.exitCode ?? 0,
+          isFoldedEpoch ? 900 : 2200,
+        );
         tokensSavedByFolding += digested.savedTokensApprox;
         resultContent = digested.text;
       }
@@ -260,28 +290,35 @@ export function packThreeZoneContext(params: {
         content: resultContent,
       });
     }
+
+    // Inject Working Memory Ledger right at the folded epoch boundary (once compacted),
+    // keeping everything after `foldUntilStep` strictly append-only.
+    if (needsCompaction && foldUntilStep > 0 && i === foldUntilStep - 1) {
+      messages.push({
+        role: 'user',
+        content: `${formatLedgerBlock(params.ledger)}\nContinue toward the goal.`,
+      });
+    }
   }
 
-  // ZONE B: Externalized Working Memory Ledger appended only once folding begins
-  // (keeps Steps 0..3 strictly append-only for maximum Ollama KV-cache reuse)
-  if (params.steps.length >= 4) {
+  // Append mid-turn steering at the tail so messages[0..N-1] stay KV-cached
+  if (params.steeringNotes && params.steeringNotes.length > 0) {
     messages.push({
       role: 'user',
-      content: `${formatLedgerBlock(params.ledger)}\nContinue toward the goal.`,
+      content: `[User Steering Update]:\n${params.steeringNotes.join('\n')}`,
     });
   }
 
-  // Hard VRAM context budget trim if still above 78% of numCtx
-  const softBudget = Math.floor(params.numCtx * 0.78);
+  // Hard VRAM context budget trim if still above 82% of numCtx
   let totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
 
-  if (totalTokens > softBudget) {
-    for (let i = 2; i < messages.length - 3 && totalTokens > softBudget; i++) {
-      if (messages[i].role === 'tool' && messages[i].content.length > 300) {
+  if (totalTokens > hardBudget) {
+    for (let i = 2; i < messages.length - 3 && totalTokens > hardBudget; i++) {
+      if (messages[i].role === 'tool' && messages[i].content.length > 260) {
         const oldLen = messages[i].content.length;
         messages[i] = {
           ...messages[i],
-          content: `${messages[i].content.slice(0, 220)}\n...[trimmed to preserve 8GB VRAM KV budget]`,
+          content: `${messages[i].content.slice(0, 200)}\n...[trimmed to preserve VRAM KV budget]`,
         };
         const deltaTokens = Math.max(0, Math.round((oldLen - messages[i].content.length) / 4));
         tokensSavedByFolding += deltaTokens;

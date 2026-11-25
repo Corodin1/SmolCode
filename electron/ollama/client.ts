@@ -39,42 +39,175 @@ export interface OllamaChatRequest {
     num_predict?: number;
     top_p?: number;
     top_k?: number;
+    min_p?: number;
+    repeat_penalty?: number;
+    presence_penalty?: number;
+    num_batch?: number;
+    stop?: string[];
   };
   signal?: AbortSignal;
   onThinkingDelta?: (delta: string) => void;
   onContentDelta?: (delta: string) => void;
 }
 
+export interface ParsedToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  parseError?: string;
+}
+
 export interface OllamaChatResponse {
   content: string;
   thinking: string;
-  toolCalls: Array<{
-    name: string;
-    arguments: Record<string, unknown>;
-  }>;
+  toolCalls: ParsedToolCall[];
   promptEvalCount: number;
   promptEvalDurationMs: number;
   evalCount: number;
   evalDurationMs: number;
+  loadDurationMs: number;
+  totalDurationMs: number;
 }
 
-function parseToolArgs(raw: Record<string, unknown> | string): Record<string, unknown> {
-  if (typeof raw !== 'string') return raw ?? {};
+/**
+ * Escapes raw unescaped newlines/tabs inside JSON string literals and removes
+ * trailing commas / unclosed braces commonly emitted by 4B-9B models.
+ */
+export function repairJsonString(input: string): string {
+  let s = input.trim();
+  // Strip optional markdown code fences
+  const fenceMatch = s.match(/^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i);
+  if (fenceMatch) {
+    s = fenceMatch[1].trim();
+  }
+
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  const stack: string[] = [];
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === '\n') {
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\r') {
+        out += '\\r';
+        continue;
+      }
+      if (ch === '\t') {
+        out += '\\t';
+        continue;
+      }
+      out += ch;
+    } else {
+      if (ch === '"') {
+        inString = true;
+        out += ch;
+        continue;
+      }
+      if (ch === '{') {
+        stack.push('}');
+        out += ch;
+        continue;
+      }
+      if (ch === '[') {
+        stack.push(']');
+        out += ch;
+        continue;
+      }
+      if (ch === '}' || ch === ']') {
+        if (stack.length > 0 && stack[stack.length - 1] === ch) {
+          stack.pop();
+        }
+        // Drop trailing comma right before closing bracket
+        out = out.replace(/,\s*$/, '');
+        out += ch;
+        continue;
+      }
+      out += ch;
+    }
+  }
+
+  if (inString) {
+    out += '"';
+  }
+  out = out.replace(/,\s*$/, '');
+  while (stack.length > 0) {
+    out += stack.pop();
+  }
+  return out;
+}
+
+export function repairAndParseToolArgs(
+  raw: Record<string, unknown> | string,
+): { args: Record<string, unknown>; parseError?: string } {
+  if (typeof raw !== 'string') {
+    return {
+      args: raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {},
+    };
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return { args: {} };
+
   try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : {};
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return { args: parsed as Record<string, unknown> };
+    }
+    return { args: {}, parseError: 'Tool arguments JSON must be an object.' };
   } catch {
-    return {};
+    // Attempt deterministic repair
+  }
+
+  try {
+    const repaired = repairJsonString(trimmed);
+    const parsed = JSON.parse(repaired);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return { args: parsed as Record<string, unknown> };
+    }
+    return { args: {}, parseError: 'Repaired tool arguments JSON was not an object.' };
+  } catch (err) {
+    return {
+      args: {},
+      parseError: `Invalid JSON arguments (${err instanceof Error ? err.message : String(err)}): ${trimmed.slice(0, 160)}`,
+    };
   }
 }
 
 export class OllamaClient {
+  private inspectCache = new Map<
+    string,
+    {
+      at: number;
+      promise: Promise<{
+        capabilities: { tools: boolean; thinking: boolean; vision: boolean };
+        contextLength: number;
+      }>;
+    }
+  >();
+
   constructor(private baseUrl: string) {}
 
   setBaseUrl(url: string): void {
     this.baseUrl = url.replace(/\/+$/, '');
+    this.inspectCache.clear();
   }
 
   getBaseUrl(): string {
@@ -114,46 +247,57 @@ export class OllamaClient {
     capabilities: { tools: boolean; thinking: boolean; vision: boolean };
     contextLength: number;
   }> {
-    try {
-      const res = await fetch(`${this.getBaseUrl()}/api/show`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: modelName }),
-      });
-      if (!res.ok) {
+    const now = Date.now();
+    const cached = this.inspectCache.get(modelName);
+    if (cached && now - cached.at < 300_000) {
+      return cached.promise;
+    }
+
+    const promise = (async () => {
+      try {
+        const res = await fetch(`${this.getBaseUrl()}/api/show`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: modelName }),
+        });
+        if (!res.ok) {
+          return {
+            capabilities: { tools: true, thinking: false, vision: false },
+            contextLength: 32768,
+          };
+        }
+        const data = (await res.json()) as {
+          capabilities?: string[];
+          model_info?: Record<string, unknown>;
+        };
+        const caps = new Set(data.capabilities ?? []);
+        let contextLength = 32768;
+        if (data.model_info) {
+          for (const [key, val] of Object.entries(data.model_info)) {
+            if (key.endsWith('.context_length') && typeof val === 'number') {
+              contextLength = val;
+              break;
+            }
+          }
+        }
+        return {
+          capabilities: {
+            tools: caps.has('tools'),
+            thinking: caps.has('thinking'),
+            vision: caps.has('vision'),
+          },
+          contextLength,
+        };
+      } catch {
         return {
           capabilities: { tools: true, thinking: false, vision: false },
           contextLength: 32768,
         };
       }
-      const data = (await res.json()) as {
-        capabilities?: string[];
-        model_info?: Record<string, unknown>;
-      };
-      const caps = new Set(data.capabilities ?? []);
-      let contextLength = 32768;
-      if (data.model_info) {
-        for (const [key, val] of Object.entries(data.model_info)) {
-          if (key.endsWith('.context_length') && typeof val === 'number') {
-            contextLength = val;
-            break;
-          }
-        }
-      }
-      return {
-        capabilities: {
-          tools: caps.has('tools'),
-          thinking: caps.has('thinking'),
-          vision: caps.has('vision'),
-        },
-        contextLength,
-      };
-    } catch {
-      return {
-        capabilities: { tools: true, thinking: false, vision: false },
-        contextLength: 32768,
-      };
-    }
+    })();
+
+    this.inspectCache.set(modelName, { at: now, promise });
+    return promise;
   }
 
   async listRunningModels(): Promise<LoadedOllamaModel[]> {
@@ -225,11 +369,64 @@ export class OllamaClient {
     let buffer = '';
     let content = '';
     let thinking = '';
-    const toolCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    const toolCalls: ParsedToolCall[] = [];
     let promptEvalCount = 0;
     let promptEvalDurationMs = 0;
     let evalCount = 0;
     let evalDurationMs = 0;
+    let loadDurationMs = 0;
+    let totalDurationMs = 0;
+
+    const processLine = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      let chunk: {
+        message?: {
+          content?: string;
+          thinking?: string;
+          tool_calls?: OllamaToolCall[];
+        };
+        done?: boolean;
+        prompt_eval_count?: number;
+        prompt_eval_duration?: number;
+        eval_count?: number;
+        eval_duration?: number;
+        load_duration?: number;
+        total_duration?: number;
+      };
+      try {
+        chunk = JSON.parse(line);
+      } catch {
+        return;
+      }
+
+      if (chunk.message?.thinking) {
+        thinking += chunk.message.thinking;
+        req.onThinkingDelta?.(chunk.message.thinking);
+      }
+      if (chunk.message?.content) {
+        content += chunk.message.content;
+        req.onContentDelta?.(chunk.message.content);
+      }
+      if (chunk.message?.tool_calls) {
+        for (const tc of chunk.message.tool_calls) {
+          const parsed = repairAndParseToolArgs(tc.function.arguments);
+          toolCalls.push({
+            name: tc.function.name,
+            arguments: parsed.args,
+            ...(parsed.parseError ? { parseError: parsed.parseError } : {}),
+          });
+        }
+      }
+      if (chunk.done) {
+        promptEvalCount = chunk.prompt_eval_count ?? 0;
+        promptEvalDurationMs = Math.round((chunk.prompt_eval_duration ?? 0) / 1e6);
+        evalCount = chunk.eval_count ?? 0;
+        evalDurationMs = Math.round((chunk.eval_duration ?? 0) / 1e6);
+        loadDurationMs = Math.round((chunk.load_duration ?? 0) / 1e6);
+        totalDurationMs = Math.round((chunk.total_duration ?? 0) / 1e6);
+      }
+    };
 
     while (true) {
       const { value, done } = await reader.read();
@@ -237,47 +434,15 @@ export class OllamaClient {
       buffer += decoder.decode(value, { stream: true });
       let newlineIdx = buffer.indexOf('\n');
       while (newlineIdx !== -1) {
-        const line = buffer.slice(0, newlineIdx).trim();
+        const line = buffer.slice(0, newlineIdx);
         buffer = buffer.slice(newlineIdx + 1);
-        if (line) {
-          const chunk = JSON.parse(line) as {
-            message?: {
-              content?: string;
-              thinking?: string;
-              tool_calls?: OllamaToolCall[];
-            };
-            done?: boolean;
-            prompt_eval_count?: number;
-            prompt_eval_duration?: number;
-            eval_count?: number;
-            eval_duration?: number;
-          };
-
-          if (chunk.message?.thinking) {
-            thinking += chunk.message.thinking;
-            req.onThinkingDelta?.(chunk.message.thinking);
-          }
-          if (chunk.message?.content) {
-            content += chunk.message.content;
-            req.onContentDelta?.(chunk.message.content);
-          }
-          if (chunk.message?.tool_calls) {
-            for (const tc of chunk.message.tool_calls) {
-              toolCalls.push({
-                name: tc.function.name,
-                arguments: parseToolArgs(tc.function.arguments),
-              });
-            }
-          }
-          if (chunk.done) {
-            promptEvalCount = chunk.prompt_eval_count ?? 0;
-            promptEvalDurationMs = Math.round((chunk.prompt_eval_duration ?? 0) / 1e6);
-            evalCount = chunk.eval_count ?? 0;
-            evalDurationMs = Math.round((chunk.eval_duration ?? 0) / 1e6);
-          }
-        }
+        processLine(line);
         newlineIdx = buffer.indexOf('\n');
       }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      processLine(buffer);
     }
 
     return {
@@ -288,6 +453,8 @@ export class OllamaClient {
       promptEvalDurationMs,
       evalCount,
       evalDurationMs,
+      loadDurationMs,
+      totalDurationMs,
     };
   }
 }

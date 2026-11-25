@@ -125,7 +125,7 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
     function: {
       name: 'patch_hashline',
       description:
-        'Apply one or more line:hash anchored edits (replace_range, insert_after, delete_range) to a file; auto-checks syntax.',
+        'Apply line:hash anchored edits (replace_range, insert_after, insert_before, delete_range); auto-checks syntax.',
       parameters: {
         type: 'object',
         properties: {
@@ -137,7 +137,7 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
               properties: {
                 op: {
                   type: 'string',
-                  enum: ['replace_range', 'insert_after', 'delete_range'],
+                  enum: ['replace_range', 'insert_after', 'insert_before', 'delete_range'],
                 },
                 startAnchor: { type: 'string' },
                 endAnchor: { type: 'string' },
@@ -379,18 +379,43 @@ export const AGENT_TOOLS: OllamaToolDef[] = [
 export function buildToolListForThread(
   interactionMode: InteractionMode,
   mcpServers: McpServerConfig[] = [],
-  options?: { webLookupEnabled?: boolean; hasActivePlan?: boolean },
+  options?: {
+    webLookupEnabled?: boolean;
+    hasActivePlan?: boolean;
+    userPrompt?: string;
+    hasSkillChips?: boolean;
+  },
 ): OllamaToolDef[] {
   const readOnly =
     options?.webLookupEnabled === false ? CORE_READ_ONLY_TOOLS : READ_ONLY_TOOLS;
+
+  const promptLower = (options?.userPrompt ?? '').toLowerCase();
+  const wantsSkill =
+    Boolean(options?.hasSkillChips) ||
+    /\b(skill|skills|save_skill|skill-creator)\b/i.test(promptLower);
+  const wantsFileOps =
+    !options?.userPrompt ||
+    /\b(delete|remove|unlink|move|rename|cleanup|clean up)\b/i.test(promptLower);
+
+  const scopedMutating = MUTATING_TOOLS.filter((t) => {
+    const name = t.function.name;
+    if (name === 'save_skill') return wantsSkill;
+    if (name === 'delete_file' || name === 'move_file') return wantsFileOps;
+    return true;
+  });
+
+  // In Build mode, exclude propose_plan so 4B-9B models never propose plans instead of editing
+  const requestInputTool = PLANNING_TOOLS.find(
+    (t) => t.function.name === 'request_user_input',
+  );
 
   const base =
     interactionMode === 'plan'
       ? [...readOnly, ...PLANNING_TOOLS, FINISH_TOOL]
       : [
           ...readOnly,
-          ...MUTATING_TOOLS,
-          ...PLANNING_TOOLS,
+          ...scopedMutating,
+          ...(requestInputTool ? [requestInputTool] : []),
           ...(options?.hasActivePlan ? [UPDATE_PLAN_STEP_TOOL] : []),
           FINISH_TOOL,
         ];
@@ -398,14 +423,15 @@ export function buildToolListForThread(
   const mcpTools: OllamaToolDef[] = [];
   for (const srv of mcpServers) {
     if (!srv.enabled || !srv.tools?.length) continue;
-    for (const t of srv.tools) {
+    for (const t of srv.tools.slice(0, 12)) {
       const safeSrv = srv.name.replace(/[^a-zA-Z0-9_-]/g, '_');
       const safeTool = t.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const shortDesc = (t.description || t.name).replace(/\s+/g, ' ').slice(0, 140);
       mcpTools.push({
         type: 'function',
         function: {
           name: `mcp__${safeSrv}__${safeTool}`,
-          description: `[MCP ${srv.name}] ${t.description || t.name}`,
+          description: `[MCP ${srv.name}] ${shortDesc}`,
           parameters: t.inputSchema ?? {
             type: 'object',
             properties: {},

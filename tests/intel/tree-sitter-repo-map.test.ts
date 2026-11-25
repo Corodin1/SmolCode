@@ -2,7 +2,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildAstRepoSkeleton, rankFilesWithPageRank } from '../../electron/intel/ast-repo-map';
+import {
+  buildAstRepoSkeleton,
+  rankFilesWithPageRank,
+  retrieveRelevantTargets,
+} from '../../electron/intel/ast-repo-map';
 import { RepoIndexer } from '../../electron/intel/repo-indexer';
 import { TreeSitterService } from '../../electron/intel/tree-sitter-service';
 import { SmolCodeStore } from '../../electron/store/database';
@@ -67,6 +71,15 @@ describe('Tree-sitter AST indexer & PageRank repo map', () => {
     const v0 = indexer2.getStructureVersion(dir);
     indexer2.markDirty(dir, 'src/new.ts', true);
     expect(indexer2.getStructureVersion(dir)).toBe(v0 + 1);
+
+    // Deterministic Stage 1.5 pre-retrieval finds symbol targets in <5ms
+    const targets = retrieveRelevantTargets(index, 'Fix the add function bug');
+    expect(targets[0]?.filePath).toBe('src/math.ts');
+    expect(targets[0]?.symbolName).toBe('add');
+
+    // In-memory cached lines work cleanly
+    const lines = indexer.getCachedFileLines(dir, 'src/math.ts');
+    expect(lines?.[0]).toContain('export function add');
 
     indexer.closeAllWatchers();
     indexer2.closeAllWatchers();

@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import { existsSync, watch, type FSWatcher } from 'node:fs';
+import {
+  existsSync,
+  readFileSync as requireReadFileSync,
+  statSync as requireStatSync,
+  watch,
+  type FSWatcher,
+} from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, posix, relative, resolve } from 'node:path';
 import type { SearchSuggestion } from '../../src/shared/types';
@@ -147,6 +153,8 @@ export class RepoIndexer {
   private watchers = new Map<string, FSWatcher>();
   private dirtyPaths = new Map<string, Set<string>>();
   private structureVersions = new Map<string, number>();
+  private indexCache = new Map<string, { index: RepoIndex; builtAt: number }>();
+  private contentCache = new Map<string, { mtimeMs: number; lines: string[] }>();
 
   constructor(
     private readonly treeSitter: TreeSitterService,
@@ -166,8 +174,51 @@ export class RepoIndexer {
       this.dirtyPaths.set(root, set);
     }
     set.add(norm);
+    this.contentCache.delete(`${root}::${norm}`);
+    if (norm === '.' || norm === '') {
+      for (const key of this.contentCache.keys()) {
+        if (key.startsWith(`${root}::`)) {
+          this.contentCache.delete(key);
+        }
+      }
+      for (const key of this.indexCache.keys()) {
+        if (key.endsWith(`::${root}`)) {
+          this.indexCache.delete(key);
+        }
+      }
+    }
     if (structural) {
       this.structureVersions.set(root, (this.structureVersions.get(root) ?? 0) + 1);
+    }
+  }
+
+  getCachedFileLines(workdir: string, relPath: string): string[] | null {
+    const root = resolve(workdir);
+    const norm = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const key = `${root}::${norm}`;
+    const absPath = join(root, norm);
+    let st;
+    try {
+      st = requireStatSync(absPath);
+    } catch {
+      this.contentCache.delete(key);
+      return null;
+    }
+    const cached = this.contentCache.get(key);
+    if (cached && Math.abs(cached.mtimeMs - st.mtimeMs) < 1) {
+      return cached.lines;
+    }
+    try {
+      const content = requireReadFileSync(absPath, 'utf8');
+      const lines = content.split(/\r?\n/);
+      if (this.contentCache.size > 1500) {
+        const firstKey = this.contentCache.keys().next().value;
+        if (firstKey) this.contentCache.delete(firstKey);
+      }
+      this.contentCache.set(key, { mtimeMs: st.mtimeMs, lines });
+      return lines;
+    } catch {
+      return null;
     }
   }
 
@@ -215,12 +266,80 @@ export class RepoIndexer {
   async buildIndex(projectId: string, workdir: string): Promise<RepoIndex> {
     const root = resolve(workdir);
     this.startWatching(root);
+    const cacheKey = `${projectId}::${root}`;
+    const cachedEntry = this.indexCache.get(cacheKey);
+    const dirtySet = this.dirtyPaths.get(root) ?? new Set<string>();
+    const now = Date.now();
+
+    // Fast path: in-memory RepoIndex is warm and fs.watch recorded no dirty paths
+    if (
+      cachedEntry &&
+      dirtySet.size === 0 &&
+      this.watchers.has(root) &&
+      now - cachedEntry.builtAt < 60_000
+    ) {
+      return cachedEntry.index;
+    }
+
+    // Incremental path: only update dirty paths in-place without full 2,500-file rescan
+    if (
+      cachedEntry &&
+      dirtySet.size > 0 &&
+      !dirtySet.has('.') &&
+      this.watchers.has(root)
+    ) {
+      const idx = cachedEntry.index;
+      for (const dirtyRel of [...dirtySet]) {
+        const absPath = join(root, dirtyRel);
+        if (!existsSync(absPath)) {
+          idx.files.delete(dirtyRel);
+          this.contentCache.delete(`${root}::${dirtyRel}`);
+          dirtySet.delete(dirtyRel);
+          continue;
+        }
+        try {
+          const st = await stat(absPath);
+          if (!st.isFile() || st.size > 512 * 1024 || !INDEXABLE_EXTS.has(extname(dirtyRel).toLowerCase())) {
+            dirtySet.delete(dirtyRel);
+            continue;
+          }
+          const content = await readFile(absPath, 'utf8');
+          const lines = content.split(/\r?\n/);
+          const lineCount = lines.length;
+          const contentHash = createHash('sha1').update(content).digest('hex');
+          const parsed = await this.treeSitter.extractSymbolsAndImports(dirtyRel, content);
+          idx.files.set(dirtyRel, {
+            relPath: dirtyRel,
+            mtimeMs: st.mtimeMs,
+            symbols: parsed.symbols,
+            imports: parsed.imports,
+            lineCount,
+          });
+          this.contentCache.set(`${root}::${dirtyRel}`, { mtimeMs: st.mtimeMs, lines });
+          this.store?.upsertAstCache({
+            projectId,
+            filePath: dirtyRel,
+            mtimeMs: st.mtimeMs,
+            contentHash,
+            symbolsJson: JSON.stringify(parsed.symbols),
+            importsJson: JSON.stringify(parsed.imports),
+            lineCount,
+          });
+        } catch {
+          // Ignore transient read error
+        }
+        dirtySet.delete(dirtyRel);
+      }
+      this.rebuildAdjacency(idx);
+      cachedEntry.builtAt = now;
+      return idx;
+    }
 
     const ignorePrefixes = await loadGitIgnorePrefixes(root);
     const relFiles = await scanIndexableFilesAsync(root, ignorePrefixes);
-    const cachedRows = this.store ? this.store.getAstCache(projectId) : [];
+    const memFiles = cachedEntry?.index.files;
+    const cachedRows = !memFiles && this.store ? this.store.getAstCache(projectId) : [];
     const cacheByPath = new Map(cachedRows.map((r) => [r.filePath, r]));
-    const dirtySet = this.dirtyPaths.get(root) ?? new Set<string>();
     const files = new Map<string, IndexedFile>();
     const existingSet = new Set(relFiles);
 
@@ -237,9 +356,13 @@ export class RepoIndexer {
             return null;
           }
 
-          const cached = cacheByPath.get(relPath);
-          const isDirty = dirtySet.has(relPath);
+          const isDirty = dirtySet.has(relPath) || dirtySet.has('.');
+          const memHit = memFiles?.get(relPath);
+          if (!isDirty && memHit && Math.abs(memHit.mtimeMs - st.mtimeMs) < 1 && memHit.lineCount > 0) {
+            return { kind: 'hit' as const, relPath, entry: memHit };
+          }
 
+          const cached = cacheByPath.get(relPath);
           if (
             !isDirty &&
             cached &&
@@ -266,8 +389,10 @@ export class RepoIndexer {
             return null;
           }
 
-          const lineCount = content.split(/\r?\n/).length;
+          const lines = content.split(/\r?\n/);
+          const lineCount = lines.length;
           const contentHash = createHash('sha1').update(content).digest('hex');
+          this.contentCache.set(`${root}::${relPath}`, { mtimeMs: st.mtimeMs, lines });
 
           if (!isDirty && cached && cached.contentHash === contentHash) {
             const entry: IndexedFile = {
@@ -333,26 +458,38 @@ export class RepoIndexer {
       }
     }
 
+    dirtySet.delete('.');
     this.store?.deleteAstCacheMissing(projectId, existingSet);
 
-    const adjacency = new Map<string, Set<string>>();
-    const reverseAdj = new Map<string, Set<string>>();
-    for (const rel of files.keys()) {
-      adjacency.set(rel, new Set());
-      reverseAdj.set(rel, new Set());
-    }
+    const builtIndex: RepoIndex = {
+      projectId,
+      workdir: root,
+      files,
+      adjacency: new Map(),
+      reverseAdj: new Map(),
+    };
+    this.rebuildAdjacency(builtIndex);
+    this.indexCache.set(cacheKey, { index: builtIndex, builtAt: now });
+    return builtIndex;
+  }
 
-    for (const [rel, info] of files) {
+  private rebuildAdjacency(index: RepoIndex): void {
+    const existingSet = new Set(index.files.keys());
+    index.adjacency.clear();
+    index.reverseAdj.clear();
+    for (const rel of existingSet) {
+      index.adjacency.set(rel, new Set());
+      index.reverseAdj.set(rel, new Set());
+    }
+    for (const [rel, info] of index.files) {
       for (const imp of info.imports) {
         const target = resolveImportTarget(rel, imp, existingSet);
         if (target && target !== rel) {
-          adjacency.get(rel)?.add(target);
-          reverseAdj.get(target)?.add(rel);
+          index.adjacency.get(rel)?.add(target);
+          index.reverseAdj.get(target)?.add(rel);
         }
       }
     }
-
-    return { projectId, workdir: root, files, adjacency, reverseAdj };
   }
 
   searchSuggestions(index: RepoIndex, query: string, limit = 20): SearchSuggestion[] {

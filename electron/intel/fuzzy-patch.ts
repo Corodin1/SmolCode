@@ -1,3 +1,5 @@
+import { stripCopiedHashlinePrefixes } from './hashline';
+
 export interface FuzzyPatchResult {
   nextContent: string;
   linesAdded: number;
@@ -79,8 +81,8 @@ export function applyFuzzyPatch(
 ): FuzzyPatchResult {
   const eol = detectEol(originalText);
   const normOrig = originalText.replace(/\r\n/g, '\n');
-  const normOld = oldText.replace(/\r\n/g, '\n');
-  const normNew = newText.replace(/\r\n/g, '\n');
+  const normOld = stripCopiedHashlinePrefixes(oldText).replace(/\r\n/g, '\n');
+  const normNew = stripCopiedHashlinePrefixes(newText).replace(/\r\n/g, '\n');
 
   if (!normOld) {
     throw new Error('oldText must not be empty.');

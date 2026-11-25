@@ -11,14 +11,14 @@ import { AGENT_TOOLS } from '../../electron/tools/tool-registry';
 import type { TurnRecord } from '../../src/shared/types';
 
 describe('KV-cache context packer & error digest', () => {
-  it('keeps Zone A prefix byte-identical across multi-step reasoning', () => {
+  it('stays strictly append-only under watermark and folds in chunked epochs above watermark', () => {
     const zoneA = buildImmutableZoneAPrefix({
       agentsPrompt: 'Always run vitest.',
       repoSkeleton: 'src/index.ts [20L]\n  function main [L1-10]',
       toolDefs: AGENT_TOOLS,
     });
 
-    const steps: StepHistoryItem[] = Array.from({ length: 5 }, (_, idx) => ({
+    const steps: StepHistoryItem[] = Array.from({ length: 6 }, (_, idx) => ({
       id: `s${idx}`,
       assistantContent: `Step ${idx}`,
       toolCalls: [
@@ -31,7 +31,8 @@ describe('KV-cache context packer & error digest', () => {
       ],
     }));
 
-    const packed1 = packThreeZoneContext({
+    // Under soft watermark (numCtx: 16384): stays strictly append-only (no premature folding)
+    const under2 = packThreeZoneContext({
       immutableSystemPrompt: zoneA.systemPrompt,
       prefixHash: zoneA.prefixHash,
       prefixTokens: zoneA.prefixTokens,
@@ -49,7 +50,7 @@ describe('KV-cache context packer & error digest', () => {
       numCtx: 16384,
     });
 
-    const packed2 = packThreeZoneContext({
+    const under5 = packThreeZoneContext({
       immutableSystemPrompt: zoneA.systemPrompt,
       prefixHash: zoneA.prefixHash,
       prefixTokens: zoneA.prefixTokens,
@@ -63,20 +64,45 @@ describe('KV-cache context packer & error digest', () => {
         activeErrors: [],
         verifiedChecks: [],
       },
-      steps,
+      steps: steps.slice(0, 5),
       numCtx: 16384,
+      steeringNotes: ['Also check edge case'],
     });
 
-    // Zone A system + user seed messages remain byte-identical for Ollama KV cache reuse
-    expect(packed1.messages[0].content).toBe(packed2.messages[0].content);
-    expect(packed1.messages[1].content).toBe(packed2.messages[1].content);
-    expect(packed1.kvPrefixHash).toBe(packed2.kvPrefixHash);
-    // Older read_range tool outputs (>3 steps ago) are folded
-    expect(packed2.tokensSavedByFolding).toBeGreaterThan(200);
-    const foldedTool = packed2.messages.find(
+    // Zone A, turn seed, and earlier step tool messages remain byte-identical (KV cache preserved)
+    expect(under2.messages[0].content).toBe(under5.messages[0].content);
+    expect(under2.messages[1].content).toBe(under5.messages[1].content);
+    expect(under2.messages[3].content).toBe(under5.messages[3].content);
+    expect(under5.messages[under5.messages.length - 1].content).toContain('[User Steering Update]');
+    expect(under5.kvPrefixHash).toBe(under2.kvPrefixHash);
+    expect(under5.tokensSavedByFolding).toBe(0);
+
+    // Above soft watermark (small numCtx: 2200): triggers chunked epoch folding + Working Memory Ledger
+    const over6 = packThreeZoneContext({
+      immutableSystemPrompt: zoneA.systemPrompt,
+      prefixHash: zoneA.prefixHash,
+      prefixTokens: zoneA.prefixTokens,
+      userPrompt: 'Fix bug',
+      prefetchedContext: '',
+      effortGuidance: 'Think concisely.',
+      ledger: {
+        goal: 'Fix bug',
+        inspectedSymbols: ['src/f0.ts', 'src/f5.ts'],
+        modifiedFiles: ['src/f5.ts'],
+        activeErrors: [],
+        verifiedChecks: [],
+      },
+      steps,
+      numCtx: 2200,
+    });
+    expect(over6.tokensSavedByFolding).toBeGreaterThan(200);
+    const foldedTool = over6.messages.find(
       (m) => m.role === 'tool' && m.content.includes('[Folded read_range'),
     );
     expect(foldedTool).toBeDefined();
+    expect(
+      over6.messages.some((m) => m.role === 'user' && m.content.includes('Working Memory Ledger')),
+    ).toBe(true);
   });
 
   it('compresses noisy build logs while retaining errors', () => {

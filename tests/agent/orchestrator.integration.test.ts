@@ -869,4 +869,185 @@ describe('4-Stage AgentOrchestrator integration (mock Ollama server)', () => {
     orch.dispose();
     store.close();
   });
+
+  it('repairs malformed tool JSON, supports <function=...> XML + path aliases, gates create_file syntax, blocks finish_turn on step error, and preserves Zone A across turns', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-orch-glitch-'));
+    const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-orch-glitch-blobs-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src/math.ts'),
+      'export function mul(a: number, b: number): number {\n  return a + b;\n}\n',
+      'utf8',
+    );
+    const badLineHash = lineHash('  return a + b;');
+
+    const seenRequests: Array<{
+      tools?: Array<{ function: { name: string } }>;
+      messages: Array<{ role: string; content: string }>;
+    }> = [];
+    let callIdx = 0;
+
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/show') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: ['tools'] }));
+        return;
+      }
+      if (req.url === '/api/chat') {
+        let body = '';
+        req.on('data', (c) => (body += String(c)));
+        req.on('end', () => {
+          const parsed = JSON.parse(body || '{}') as {
+            tools?: Array<{ function: { name: string } }>;
+            messages: Array<{ role: string; content: string }>;
+          };
+          seenRequests.push(parsed);
+          callIdx += 1;
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+
+          if (callIdx === 1) {
+            // Step 1: atomic create_file syntax rejection + finish_turn in same step (finish_turn must be blocked!)
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [
+                    {
+                      function: {
+                        name: 'create_file',
+                        arguments: { filePath: 'src/broken.ts', content: 'export function bad( {\n' },
+                      },
+                    },
+                    {
+                      function: {
+                        name: 'finish_turn',
+                        arguments: { summary: 'Premature finish' },
+                      },
+                    },
+                  ],
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else if (callIdx === 2) {
+            // Step 2: malformed JSON string with unescaped newline + trailing comma, plus `path` alias + copied `2:xx| ` prefix
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [
+                    {
+                      function: {
+                        name: 'patch_hashline',
+                        arguments: `{"path":"src/math.ts","edits":[{"op":"replace_range","startAnchor":"L2:${badLineHash}","endAnchor":"2:${badLineHash}","content":"2:${badLineHash}|   return a * b;\n",}],}`,
+                      },
+                    },
+                  ],
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else if (callIdx === 3) {
+            // Step 3: Qwen XML <function=finish_turn> fallback
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content:
+                    '<function=finish_turn><parameter=summary>Fixed mul operator cleanly.</parameter></function>',
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else {
+            // Turn 2: direct answer
+            res.write(
+              JSON.stringify({
+                message: { role: 'assistant', content: 'Turn 2 verified.' },
+                done: false,
+              }) + '\n',
+            );
+          }
+          res.write(
+            JSON.stringify({
+              done: true,
+              prompt_eval_count: 150,
+              prompt_eval_duration: 15_000_000,
+              eval_count: 25,
+              eval_duration: 25_000_000,
+              load_duration: 0,
+            }) + '\n',
+          );
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(blobDir, { recursive: true, force: true }),
+    );
+
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'qwen3.5:9b',
+      defaultFastModel: 'qwen3.5:9b',
+    });
+    const snapshots = new SnapshotManager(store, blobDir);
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      snapshots,
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+
+    const proj = store.upsertProject({ name: 'glitch-demo', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'New thread',
+      interactionMode: 'build',
+      mainModel: 'qwen3.5:9b',
+      fastModel: 'qwen3.5:9b',
+      effort: 'medium',
+      approvalPolicy: 'auto',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    await orch.runUserTurn({ threadId: thread.id, content: 'Fix mul in src/math.ts' });
+
+    // Broken file was rejected BEFORE hitting disk
+    expect(existsSync(join(dir, 'src/broken.ts'))).toBe(false);
+    // Patch succeeded after repairing JSON + path alias + stripping copied line:hash| prefix
+    expect(readFileSync(join(dir, 'src/math.ts'), 'utf8')).toContain('return a * b;');
+    // Build mode pruned propose_plan
+    const sentToolNames = (seenRequests[0].tools ?? []).map((t) => t.function.name);
+    expect(sentToolNames).not.toContain('propose_plan');
+    // Single-model heuristic title avoided an extra Stage 4 LLM call
+    expect(callIdx).toBe(3);
+    expect(store.getThread(thread.id)?.title).toContain('Fix mul');
+
+    // Turn 2: Zone A system prompt stays 100% byte-identical across turns
+    await orch.runUserTurn({ threadId: thread.id, content: 'Check mul again' });
+    expect(seenRequests[3].messages[0].content).toBe(seenRequests[0].messages[0].content);
+
+    orch.dispose();
+    store.close();
+  });
 });

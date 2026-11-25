@@ -70,13 +70,38 @@ describe('VRAM Scheduler & Effort Profiles', () => {
     expect(high.numPredict).toBeLessThan(xhigh.numPredict);
 
     // Non-thinking execution & verification settings remain uniform across effort levels
+    // (no per-effort step limits)
     for (const p of [low, med, high, xhigh]) {
       expect(p.numCtx).toBe(12288);
-      expect(p.maxMainSteps).toBe(14);
+      expect('maxMainSteps' in p).toBe(false);
       expect(p.runFastScout).toBe(true);
       expect(p.verifyDepth).toBe('typecheck+tests');
       expect(p.temperature).toBe(0.2);
     }
+
+    // Small <=4B models auto-disable thinking at medium effort to avoid <think> exhaustion
+    const tinyOpts = scheduler.resolveRoleOptions({
+      role: 'main',
+      fastModel: 'qwen3:4b',
+      mainModel: 'qwen3:4b',
+      effort: 'medium',
+      settings: DEFAULT_APP_SETTINGS,
+    });
+    expect(tinyOpts.think).toBe(false);
+    expect(tinyOpts.options.repeat_penalty).toBeGreaterThan(1);
+    expect(tinyOpts.options.num_batch).toBe(512);
+
+    // 9B thinking models get thinking-family sampling (presence_penalty + higher temp)
+    const smallThinkOpts = scheduler.resolveRoleOptions({
+      role: 'main',
+      fastModel: 'qwen3.5:9b',
+      mainModel: 'qwen3.5:9b',
+      effort: 'medium',
+      settings: DEFAULT_APP_SETTINGS,
+    });
+    expect(smallThinkOpts.think).toBe(true);
+    expect(smallThinkOpts.options.presence_penalty).toBe(0.4);
+    expect(smallThinkOpts.options.temperature).toBeGreaterThanOrEqual(0.25);
   });
 
   it('distinguishes distinct nested patch_hashline edits in LoopGuard', () => {

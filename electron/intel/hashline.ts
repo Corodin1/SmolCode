@@ -1,8 +1,27 @@
 export interface HashlineEdit {
-  op: 'replace_range' | 'insert_after' | 'delete_range';
+  op: 'replace_range' | 'insert_after' | 'insert_before' | 'delete_range';
   startAnchor: string;
   endAnchor?: string;
   content?: string;
+}
+
+/**
+ * Strips accidental `42:a7| ` or `42| ` prefixes when small models copy lines
+ * verbatim from `read_range`/`read_symbol` output into patch content.
+ */
+export function stripCopiedHashlinePrefixes(text: string): string {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const nonEmpty = lines.filter((l) => l.trim().length > 0);
+  if (nonEmpty.length === 0) return text;
+  const hasHashPrefix = nonEmpty.every((l) => /^\s*\d+:[0-9a-zA-Z]{2}\|\s?/.test(l));
+  if (hasHashPrefix) {
+    return lines.map((l) => l.replace(/^\s*\d+:[0-9a-zA-Z]{2}\|\s?/, '')).join('\n');
+  }
+  const hasLineNumPrefix = nonEmpty.length >= 2 && nonEmpty.every((l) => /^\s*\d+\|\s?/.test(l));
+  if (hasLineNumPrefix) {
+    return lines.map((l) => l.replace(/^\s*\d+\|\s?/, '')).join('\n');
+  }
+  return text;
 }
 
 export interface HashlineResult {
@@ -43,7 +62,11 @@ export function formatHashlineSlice(
 }
 
 export function parseAnchor(anchor: string): { line: number; hash: string | null } {
-  const cleaned = anchor.trim().split('|')[0].trim();
+  const cleaned = anchor
+    .trim()
+    .split('|')[0]
+    .trim()
+    .replace(/^(?:line\s+|l(?=\d))/i, '');
   const match = cleaned.match(/^(\d+)(?::([0-9a-zA-Z]{2}))?$/);
   if (!match) {
     throw new Error(
@@ -133,12 +156,12 @@ export function applyHashlineEdits(
   // Resolve all anchors against the original line snapshot first
   const resolved = edits.map((edit) => {
     const startIdx = resolveAnchorLine(lines, edit.startAnchor);
-    const endIdx =
-      edit.op === 'insert_after'
-        ? startIdx
-        : edit.endAnchor
-          ? resolveAnchorLine(lines, edit.endAnchor)
-          : startIdx;
+    const isInsert = edit.op === 'insert_after' || edit.op === 'insert_before';
+    const endIdx = isInsert
+      ? startIdx
+      : edit.endAnchor
+        ? resolveAnchorLine(lines, edit.endAnchor)
+        : startIdx;
 
     if (endIdx < startIdx) {
       throw new Error(
@@ -146,10 +169,14 @@ export function applyHashlineEdits(
       );
     }
 
+    const cleanedContent =
+      edit.op === 'delete_range'
+        ? ''
+        : stripCopiedHashlinePrefixes(edit.content ?? '');
     const replacementLines =
       edit.op === 'delete_range'
         ? []
-        : (edit.content ?? '').replace(/\r\n/g, '\n').split('\n');
+        : cleanedContent.replace(/\r\n/g, '\n').split('\n');
 
     return {
       op: edit.op,
@@ -166,7 +193,12 @@ export function applyHashlineEdits(
   for (let i = 0; i < resolved.length - 1; i++) {
     const later = resolved[i];
     const earlier = resolved[i + 1];
-    if (earlier.op !== 'insert_after' && later.startIdx <= earlier.endIdx) {
+    const laterIsInsert = later.op === 'insert_after' || later.op === 'insert_before';
+    const earlierIsInsert = earlier.op === 'insert_after' || earlier.op === 'insert_before';
+    if (!earlierIsInsert && !laterIsInsert && later.startIdx <= earlier.endIdx) {
+      throw new Error('Overlapping hashline edit ranges in a single patch call.');
+    }
+    if (!earlierIsInsert && later.op === 'insert_before' && later.startIdx < earlier.endIdx) {
       throw new Error('Overlapping hashline edit ranges in a single patch call.');
     }
   }
@@ -183,6 +215,10 @@ export function applyHashlineEdits(
       lines.splice(item.startIdx + 1, 0, ...item.replacementLines);
       linesAdded += item.replacementLines.length;
       maxChangedLine = Math.max(maxChangedLine, startLn + item.replacementLines.length);
+    } else if (item.op === 'insert_before') {
+      lines.splice(item.startIdx, 0, ...item.replacementLines);
+      linesAdded += item.replacementLines.length;
+      maxChangedLine = Math.max(maxChangedLine, startLn + item.replacementLines.length - 1);
     } else if (item.op === 'delete_range') {
       const count = item.endIdx - item.startIdx + 1;
       lines.splice(item.startIdx, count);
