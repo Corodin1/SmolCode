@@ -1,0 +1,38 @@
+appId: com.smolcode.app
+productName: SmolCode
+copyright: Copyright © 2026 SmolCode
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - build/icon.ico
+  - build/icon.png
+  - package.json
+asar: true
+asarUnpack:
+  - node_modules/@lydell/**
+  - node_modules/web-tree-sitter/**
+  - node_modules/tree-sitter-wasms/**
+npmRebuild: false
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  artifactName: SmolCode-Setup-${version}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SmolCode
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+portable:
+  artifactName: SmolCode-Portable-${version}.${ext}

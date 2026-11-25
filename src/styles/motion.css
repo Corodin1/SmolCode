@@ -1,0 +1,352 @@
+:root {
+  /* Emil Kowalski custom easing curves */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Pressable button responsiveness */
+.pressable {
+  cursor: pointer;
+  transition:
+    transform 150ms var(--ease-out),
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.pressable:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.pressable:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+/* Hover transitions strictly gated for fine pointer devices */
+@media (hover: hover) and (pointer: fine) {
+  .hover-surface:hover:not(:disabled) {
+    background-color: var(--bg-surface-hover);
+  }
+
+  .hover-reveal-parent .hover-reveal-actions {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+
+  .hover-reveal-parent:hover .hover-reveal-actions,
+  .hover-reveal-parent:focus-within .hover-reveal-actions {
+    opacity: 1;
+  }
+
+  .codex-starter-card:hover {
+    border-color: var(--border-default);
+    transform: translateY(-1px);
+  }
+}
+
+/* Origin-aware popovers */
+.codex-popover {
+  transform-origin: var(--transform-origin, bottom left);
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  transition:
+    transform 170ms var(--ease-out),
+    opacity 150ms var(--ease-out);
+}
+
+@starting-style {
+  .codex-popover {
+    opacity: 0;
+    transform: scale(0.95) translateY(3px);
+  }
+}
+
+/* Floating Liquid Pill entrance (preserving translateX(-50%) centering when needed) */
+.liquid-pill-enter {
+  opacity: 1;
+  transform: translateX(-50%) scale(1) translateY(0);
+  transition:
+    transform 170ms var(--ease-out),
+    opacity 150ms var(--ease-out);
+}
+
+@starting-style {
+  .liquid-pill-enter {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.95) translateY(4px);
+  }
+}
+
+/* Modals stay centered (never anchored to a trigger) */
+.codex-modal-backdrop {
+  opacity: 1;
+  transition: opacity 180ms var(--ease-out);
+}
+
+@starting-style {
+  .codex-modal-backdrop {
+    opacity: 0;
+  }
+}
+
+.codex-modal-card {
+  transform-origin: center;
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  transition:
+    transform 210ms var(--ease-out),
+    opacity 180ms var(--ease-out);
+}
+
+@starting-style {
+  .codex-modal-card {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+}
+
+/* Keyboard-triggered command palette: 0ms animation (Raycast rule) */
+.codex-instant-palette {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* Blur crossfade for Send <-> Stop icon morph */
+.blur-swap {
+  transition:
+    filter 180ms ease,
+    opacity 180ms ease,
+    transform 160ms var(--ease-out);
+}
+
+.blur-swap[data-swapping='true'] {
+  filter: blur(2px);
+  opacity: 0.72;
+}
+
+/* Hold-to-revert destructive safeguard: slow deliberate press, instant release */
+.hold-danger-btn {
+  position: relative;
+  overflow: hidden;
+}
+
+.hold-danger-fill {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(239, 68, 68, 0.22);
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 180ms var(--ease-out);
+  pointer-events: none;
+}
+
+.hold-danger-btn:active:not(:disabled) .hold-danger-fill {
+  clip-path: inset(0 0 0 0);
+  transition: clip-path 1100ms linear;
+}
+
+/* Instant subsequent tooltips (Emil Kowalski pattern) */
+.codex-tooltip-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.codex-tooltip {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) scale(1);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-popover);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: var(--z-tooltip);
+  transform-origin: var(--transform-origin, top center);
+  opacity: 1;
+  transition:
+    transform 125ms var(--ease-out),
+    opacity 125ms var(--ease-out);
+}
+
+.codex-tooltip[data-placement='bottom'] {
+  top: calc(100% + 6px);
+}
+
+.codex-tooltip[data-placement='top'] {
+  bottom: calc(100% + 6px);
+}
+
+@starting-style {
+  .codex-tooltip {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.97);
+  }
+}
+
+.codex-tooltip[data-instant='true'] {
+  transition-duration: 0ms;
+}
+
+.codex-tooltip-kbd {
+  padding: 1px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Staggered micro-entrance for timeline steps & starter cards */
+.stagger-item {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 190ms var(--ease-out),
+    transform 210ms var(--ease-out);
+  transition-delay: calc(var(--stagger-index, 0) * 35ms);
+}
+
+@starting-style {
+  .stagger-item {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+
+/* Chevron rotation for collapsible sections */
+.chevron-rotator {
+  transition: transform 160ms var(--ease-out);
+}
+
+.chevron-rotator[data-open='true'] {
+  transform: rotate(90deg);
+}
+
+/* Subtle spinner for active inference */
+@keyframes codex-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.codex-spinner {
+  animation: codex-spin 650ms linear infinite;
+}
+
+/* Antigravity active working orb & shimmer text */
+@keyframes status-orb-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.14);
+    opacity: 1;
+  }
+}
+
+.status-orb {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent-brand);
+  box-shadow:
+    0 0 10px color-mix(in srgb, var(--accent-brand) 65%, transparent),
+    0 0 0 3px var(--accent-brand-soft);
+  animation: status-orb-pulse 1.5s var(--ease-in-out) infinite;
+}
+
+@keyframes ag-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--text-secondary) 0%,
+    var(--text-primary) 45%,
+    var(--text-secondary) 90%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ag-shimmer 2.1s linear infinite;
+}
+
+/* Reduced motion accessibility: remove spatial transforms, preserve subtle fades */
+@media (prefers-reduced-motion: reduce) {
+  .codex-popover,
+  .liquid-pill-enter,
+  .codex-modal-card,
+  .codex-tooltip,
+  .stagger-item,
+  .pressable,
+  .chevron-rotator {
+    transition-property: opacity, background-color, border-color;
+    transition-duration: 120ms;
+    transition-delay: 0ms;
+    transform: none !important;
+  }
+
+  .liquid-pill-enter {
+    transform: translateX(-50%) !important;
+  }
+
+  .codex-spinner {
+    animation-duration: 1.8s;
+  }
+
+  .status-orb {
+    animation: none;
+  }
+
+  .shimmer-text {
+    animation: none;
+    background: none;
+    color: var(--text-primary);
+  }
+}
+
+[data-reduce-motion='true'] .codex-popover,
+[data-reduce-motion='true'] .liquid-pill-enter,
+[data-reduce-motion='true'] .codex-modal-card,
+[data-reduce-motion='true'] .codex-tooltip,
+[data-reduce-motion='true'] .stagger-item,
+[data-reduce-motion='true'] .pressable,
+[data-reduce-motion='true'] .chevron-rotator {
+  transition-property: opacity, background-color, border-color;
+  transition-duration: 80ms;
+  transition-delay: 0ms;
+  transform: none !important;
+}
+
+[data-reduce-motion='true'] .liquid-pill-enter {
+  transform: translateX(-50%) !important;
+}
+
+[data-reduce-motion='true'] .status-orb {
+  animation: none;
+}
+
+[data-reduce-motion='true'] .shimmer-text {
+  animation: none;
+  background: none;
+  color: var(--text-primary);
+}

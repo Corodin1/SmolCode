@@ -1,0 +1,27 @@
+import type { AppSettings } from '../shared/types';
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  ollamaBaseUrl: 'http://127.0.0.1:11434',
+  vramScheduleMode: 'stage-batched',
+  pinFastToCpu: false,
+  theme: 'dark',
+  themePreset: 'obsidian',
+  accentColor: 'blue',
+  uiDensity: 'comfortable',
+  fontSize: 'md',
+  glassIntensity: 'subtle',
+  reduceMotion: false,
+  defaultMainModel: '',
+  defaultFastModel: '',
+  defaultEffort: 'medium',
+  defaultApprovalPolicy: 'auto',
+  defaultShell: 'auto',
+  preferredEditor: 'auto',
+  notifyOnComplete: true,
+  soundOnComplete: true,
+  sttEndpointUrl: '',
+  sttModel: 'whisper-1',
+  showAdvancedDualModel: false,
+  webLookupEnabled: true,
+  obscuraPath: '',
+};
