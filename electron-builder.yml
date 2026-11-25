@@ -1,6 +1,6 @@
 appId: com.smolcode.app
 productName: SmolCode
-copyright: Copyright © 2026 SmolCode
+copyright: Copyright © 2026 SmolCode Contributors
 directories:
   output: release
   buildResources: build
@@ -17,6 +17,7 @@ asarUnpack:
 npmRebuild: false
 win:
   icon: build/icon.ico
+  legalTrademarks: "SmolCode"
   target:
     - target: nsis
       arch:

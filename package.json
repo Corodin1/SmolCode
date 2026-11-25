@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "license": "MIT",
   "description": "Local coding agent with a 1:1 OpenAI Codex Desktop interface",
+  "author": "SmolCode Contributors",
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
