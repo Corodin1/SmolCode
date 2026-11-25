@@ -18,7 +18,7 @@
     "test:watch": "vitest",
     "bench": "tsx bench/runner.ts",
     "screenshots": "electron scripts/capture-screenshots.cjs",
-    "icons": "electron scripts/generate-icons.js"
+    "icons": "node scripts/generate-icons.js"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.18",
