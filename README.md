@@ -5,7 +5,7 @@
 <h1 align="center">SmolCode</h1>
 
 <p align="center">
-  <strong>Local coding agent with a 1:1 OpenAI Codex Desktop interface</strong>
+  <strong>Local, private, offline-first autonomous coding agent desktop application</strong>
 </p>
 
 <p align="center">
@@ -22,13 +22,13 @@
 
 ## Overview
 
-**SmolCode** is a local-first desktop application that delivers the complete **OpenAI Codex Desktop** experience directly on your machine, powered by offline LLMs via [Ollama](https://ollama.com).
+**SmolCode** is a local-first autonomous coding agent desktop application powered by offline LLMs via [Ollama](https://ollama.com).
 
-Designed for privacy, speed, and focus, SmolCode eliminates external cloud subscriptions and API rate limits. It brings together an intelligent 4-stage agent orchestrator, Tree-sitter AST symbol mapping, stage-batched VRAM scheduling, and a Git-free content-addressed snapshot engine for instantaneous turn-by-turn rollbacks.
+Designed for privacy, speed, and autonomy, SmolCode eliminates cloud dependencies, subscription tiers, and API rate limits. It brings together an intelligent 4-stage agent orchestrator, Tree-sitter AST symbol mapping, stage-batched VRAM scheduling, and a Git-free content-addressed snapshot engine for instantaneous turn-by-turn rollbacks.
 
 ### Why SmolCode?
 
-- **1:1 OpenAI Codex Desktop Experience:** Pixel-faithful design, including the iconic composer bar, chip tokens, collapsible thinking traces, and live tool activity streams.
+- **Refined Desktop Experience:** Clean, high-performance interface with prompt composer chips, collapsible thinking traces, live tool activity streams, and instant theme customization.
 - **100% Offline & Private:** Your codebase, prompts, and tokens never leave your workstation.
 - **Git-Free Snapshot Rollbacks:** Built-in content-addressed blob storage under `~/.smolcode/blobs/` lets you revert any turn without polluting or modifying your Git branches.
 - **Stage-Batched VRAM Scheduler:** Automatically cycles lightweight scout models (1.5B/3B) and deep reasoning models (7B/14B/32B) sequentially to prevent GPU out-of-memory errors on single-GPU hardware.
@@ -42,7 +42,7 @@ Designed for privacy, speed, and focus, SmolCode eliminates external cloud subsc
 <p align="center">
   <img src="./docs/screenshots/01-main-thread.png" alt="SmolCode Main Thread & Composer" width="95%" />
   <br />
-  <em>Main Codex Thread view: Plan/Build mode switch, model picker, collapsible reasoning trace, and structured plan execution.</em>
+  <em>Main Workspace Thread view: Plan/Build mode switch, model picker, collapsible reasoning trace, and structured plan execution.</em>
 </p>
 
 <p align="center">
@@ -178,7 +178,7 @@ Open SmolCode. Click **Open Project** on the welcome screen and select any local
 │                    SmolCode Desktop (Electron)               │
 ├──────────────────────────────┬───────────────────────────────┤
 │ React 19 Shell               │ Node.js Main Process          │
-│ • 1:1 Codex Desktop UI       │ • 4-Stage Agent Orchestrator  │
+│ • Reactive Desktop UI        │ • 4-Stage Agent Orchestrator  │
 │ • Semantic Token Design      │ • Tree-sitter AST Repo Map    │
 │ • Virtualized ThreadView     │ • Stage-Batched VRAM Manager  │
 │ • Embedded xterm.js Drawer   │ • Content-Addressed Snapshots │

@@ -2,7 +2,7 @@
   "name": "smolcode",
   "version": "0.1.0",
   "license": "MIT",
-  "description": "Local coding agent with a 1:1 OpenAI Codex Desktop interface",
+  "description": "Local, private, offline-first autonomous coding agent desktop application",
   "author": "SmolCode Contributors",
   "main": "./out/main/index.js",
   "type": "module",
@@ -17,7 +17,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "tsx bench/runner.ts",
-    "screenshots": "electron scripts/capture-screenshots.cjs"
+    "screenshots": "electron scripts/capture-screenshots.cjs",
+    "icons": "electron scripts/generate-icons.js"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.18",
