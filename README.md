@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/logo.svg" width="160" height="160" alt="SmolCode Cat Logo" />
+  <img src="./docs/assets/logo.png" width="160" height="160" alt="SmolCode Cat Logo" />
 </p>
 
 <h1 align="center">SmolCode</h1>
