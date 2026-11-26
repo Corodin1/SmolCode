@@ -90,4 +90,22 @@ Stress-test a plan, design, or requirement before writing code by walking down e
 3. **Resolving Branches:** Cover requirements, data/state flow, edge cases, failure/rollback semantics, UI states, and verification criteria—resolving dependencies one frontier at a time.
 4. **Hold Execution Until Aligned:** Keep interviewing until all meaningful design decisions are resolved; summarize the agreed decisions clearly before proposing a plan or editing files.`,
   },
+  {
+    id: 'builtin-image-gen',
+    name: 'image-gen',
+    description:
+      'Generate local images (illustrations, UI mockups, icons, sprites, wallpapers, photos) via generate_image using the best available local backend.',
+    sourcePath: 'builtin://image-gen/SKILL.md',
+    scope: 'builtin',
+    tags: ['image', 'media', 'creative'],
+    content: `## Purpose
+Generate high-quality images locally with \`generate_image\` using SmolCode's active local backend (\`Ollama\`, \`stable-diffusion.cpp\`, \`ComfyUI\`, or \`Automatic1111\`).
+
+## Workflow
+1. **Craft a Vivid Prompt:** Expand short user requests into a clear, descriptive prompt specifying subject, composition, lighting, medium/style, color palette, and framing. Keep \`negativePrompt\` concise (e.g. \`blurry, low quality, distorted, watermark\`) when helpful.
+2. **Pick Dimensions:** Match the aspect ratio to the goal (\`1024x1024\` square default, \`1024x576\` landscape/banner/wallpaper, \`576x1024\` portrait/mobile, or \`768x768\`/\`512x512\` for fast drafts or icons).
+3. **Generate:** Call \`generate_image\` once with the refined prompt. If the user asked to save an asset into the repository (e.g. \`public/hero.png\` or \`assets/logo.png\`), pass \`saveToRelPath\`.
+4. **Report Cleanly:** Once \`generate_image\` succeeds, do NOT paste base64 or markdown \`![]()\` links—SmolCode renders the generated image card inline automatically. Summarize the prompt/style used, backend, and saved workspace path (if any) before \`finish_turn\`.
+5. **If No Backend Is Ready:** Relay the exact diagnostic from \`generate_image\` clearly so the user can pull an Ollama image model (\`ollama pull x/flux2-klein\` or \`x/z-image-turbo\`) or configure \`sd-cli\` / ComfyUI / A1111 in Settings → Models & Inference.`,
+  },
 ];

@@ -12,12 +12,13 @@ import {
   Shield,
   Sparkles,
   Square,
+  Wand2,
   Zap,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type {
   ApprovalPolicy,
-  EffortLevel,
+  ImageGenSize,
   OllamaModelInfo,
   TelemetrySnapshot,
   ThreadRecord,
@@ -26,6 +27,7 @@ import type {
 import { FrostedSurface } from '../Common/FrostedSurface';
 import { Tooltip } from '../Common/Tooltip';
 import { EfficiencyPopover } from '../Thread/EfficiencyPopover';
+import { EFFORT_TIERS, EffortSignalIcon, EffortSlider } from './EffortSlider';
 
 interface ComposerBarProps {
   thread: ThreadRecord;
@@ -42,6 +44,8 @@ interface ComposerBarProps {
   recording: boolean;
   transcribing: boolean;
   statsOpen?: boolean;
+  imageGenSize?: ImageGenSize;
+  onChangeImageGenSize?: (size: ImageGenSize) => void;
   onSetStatsOpen?: (open: boolean) => void;
   onToggleFollowUpMode: () => void;
   onToggleRecording: () => void;
@@ -53,11 +57,12 @@ interface ComposerBarProps {
   onStop: () => void;
 }
 
-const EFFORT_OPTIONS: Array<{ value: EffortLevel; label: string; hint: string }> = [
-  { value: 'low', label: 'Low', hint: 'Short reasoning, fastest before acting' },
-  { value: 'medium', label: 'Medium', hint: 'Balanced thinking before acting' },
-  { value: 'high', label: 'High', hint: 'Detailed thinking on edge cases' },
-  { value: 'xhigh', label: 'Extra High', hint: 'Deep exhaustive reasoning before acting' },
+const IMAGE_SIZE_OPTIONS: Array<{ value: ImageGenSize; shortLabel: string; label: string }> = [
+  { value: '1024x1024', shortLabel: '1:1', label: 'Square (1024×1024)' },
+  { value: '1024x576', shortLabel: '16:9', label: 'Landscape (1024×576)' },
+  { value: '576x1024', shortLabel: '9:16', label: 'Portrait (576×1024)' },
+  { value: '768x768', shortLabel: '768px', label: 'Balanced (768×768)' },
+  { value: '512x512', shortLabel: '512px', label: 'Fast draft (512×512)' },
 ];
 
 const APPROVAL_OPTIONS: Array<{ value: ApprovalPolicy; label: string; hint: string }> = [
@@ -71,6 +76,7 @@ type OpenMenu =
   | 'main'
   | 'fast'
   | 'effort'
+  | 'imageSize'
   | 'approval'
   | 'stats'
   | null;
@@ -96,6 +102,8 @@ export function ComposerBar({
   recording,
   transcribing,
   statsOpen,
+  imageGenSize = '1024x1024',
+  onChangeImageGenSize,
   onSetStatsOpen,
   onToggleFollowUpMode,
   onToggleRecording,
@@ -110,6 +118,36 @@ export function ComposerBar({
   const barRef = useRef<HTMLDivElement>(null);
 
   const isStatsOpen = statsOpen ?? openMenu === 'stats';
+  const hasImageGenChip = (thread.draftChips ?? []).some(
+    (c) => c.kind === 'skill' && (c.skillName ?? c.label).replace(/^\/+/, '') === 'image-gen',
+  );
+  const imageSizeMeta =
+    IMAGE_SIZE_OPTIONS.find((s) => s.value === imageGenSize) ?? IMAGE_SIZE_OPTIONS[0];
+
+  const toggleImageGenSkill = () => {
+    const existing = thread.draftChips ?? [];
+    if (hasImageGenChip) {
+      onUpdateThread({
+        draftChips: existing.filter(
+          (c) => !(c.kind === 'skill' && (c.skillName ?? c.label).replace(/^\/+/, '') === 'image-gen'),
+        ),
+      });
+    } else {
+      onUpdateThread({
+        ...(thread.interactionMode === 'plan' ? { interactionMode: 'build' } : {}),
+        draftChips: [
+          ...existing,
+          {
+            id: 'skill:image-gen',
+            kind: 'skill',
+            label: '/image-gen',
+            skillName: 'image-gen',
+          },
+        ],
+      });
+    }
+    setOpenMenu(null);
+  };
 
   useEffect(() => {
     if (!openMenu && !statsOpen) return;
@@ -144,7 +182,7 @@ export function ComposerBar({
   };
 
   const ctxRatio = Math.min(1, activeContextTokens / Math.max(1, contextBudget));
-  const effortMeta = EFFORT_OPTIONS.find((e) => e.value === thread.effort) ?? EFFORT_OPTIONS[1];
+  const effortMeta = EFFORT_TIERS.find((e) => e.value === thread.effort) ?? EFFORT_TIERS[1];
   const approvalMeta =
     APPROVAL_OPTIONS.find((a) => a.value === thread.approvalPolicy) ?? APPROVAL_OPTIONS[1];
 
@@ -224,6 +262,32 @@ export function ComposerBar({
               >
                 <FilePlus2 size={13} aria-hidden="true" />
                 <span>Attach files or images</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="pressable hover-surface"
+                onClick={toggleImageGenSkill}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '6px 8px',
+                  border: 'none',
+                  borderRadius: 7,
+                  background: hasImageGenChip ? 'var(--accent-brand-soft)' : 'transparent',
+                  color: hasImageGenChip ? 'var(--accent-brand)' : 'inherit',
+                  fontSize: 12.5,
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <Wand2 size={13} aria-hidden="true" />
+                  <span>Create image</span>
+                </span>
+                {hasImageGenChip && <Check size={12} aria-hidden="true" />}
               </button>
               <button
                 type="button"
@@ -416,73 +480,136 @@ export function ComposerBar({
           )}
         </div>
 
-        {/* Reasoning Effort Pill */}
+        {/* Reasoning Effort Pill + Tactile Pill Slider Popover */}
         <div style={{ position: 'relative' }}>
           <button
             type="button"
             className="codex-pill pressable hover-surface"
+            data-effort={thread.effort}
             onClick={() => toggleMenu('effort')}
             aria-expanded={openMenu === 'effort'}
             title={`Reasoning Effort: ${effortMeta.label}`}
+            style={
+              thread.effort === 'xhigh'
+                ? {
+                    borderColor: 'color-mix(in srgb, var(--effort-xhigh) 42%, var(--border-subtle))',
+                    background: 'color-mix(in srgb, var(--effort-xhigh) 12%, var(--bg-surface))',
+                  }
+                : undefined
+            }
           >
-            <span className="codex-pill-label">{effortMeta.label}</span>
+            <EffortSignalIcon level={thread.effort} size={12} />
+            <span
+              className="codex-pill-label"
+              style={
+                thread.effort === 'xhigh'
+                  ? { color: 'var(--effort-xhigh)', fontWeight: 600 }
+                  : undefined
+              }
+            >
+              {effortMeta.label}
+            </span>
             <ChevronDown size={11} aria-hidden="true" />
           </button>
 
           {openMenu === 'effort' && (
             <FrostedSurface
               variant="popover"
-              cornerRadius={11}
+              cornerRadius={18}
               className="codex-popover"
-              role="menu"
-              aria-label="Select Reasoning Effort"
+              role="dialog"
+              aria-label="Reasoning Effort Slider"
               style={{
                 position: 'absolute',
                 bottom: 34,
                 left: 0,
-                width: 250,
-                padding: 6,
+                width: 284,
+                padding: '12px 14px 14px',
                 zIndex: 'var(--z-popover)',
                 '--transform-origin': 'bottom left',
               } as React.CSSProperties}
             >
-              {EFFORT_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={opt.value === thread.effort}
-                  className="pressable hover-surface"
-                  onClick={() => {
-                    onUpdateThread({ effort: opt.value });
-                    setOpenMenu(null);
-                  }}
-                  style={{
-                    width: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '6px 8px',
-                    border: 'none',
-                    borderRadius: 7,
-                    background: 'transparent',
-                    textAlign: 'left',
-                  }}
-                >
-                  <Check
-                    size={12}
-                    style={{ opacity: opt.value === thread.effort ? 1 : 0, flexShrink: 0 }}
-                    aria-hidden="true"
-                  />
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 500 }}>{opt.label}</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{opt.hint}</span>
-                  </div>
-                </button>
-              ))}
+              <EffortSlider
+                variant="popover"
+                value={thread.effort}
+                onChange={(nextEffort) => onUpdateThread({ effort: nextEffort })}
+              />
             </FrostedSurface>
           )}
         </div>
+
+        {/* Inline Image Aspect Ratio Pill (shown when Create image / /image-gen is active) */}
+        {hasImageGenChip && (
+          <div style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className="codex-pill pressable hover-surface"
+              data-highlighted="true"
+              onClick={() => toggleMenu('imageSize')}
+              aria-expanded={openMenu === 'imageSize'}
+              title={`Image size: ${imageSizeMeta.label}`}
+            >
+              <Wand2 size={11.5} style={{ color: 'var(--accent-brand)' }} aria-hidden="true" />
+              <span className="codex-pill-label">{imageSizeMeta.shortLabel}</span>
+              <ChevronDown size={11} aria-hidden="true" />
+            </button>
+
+            {openMenu === 'imageSize' && (
+              <FrostedSurface
+                variant="popover"
+                cornerRadius={11}
+                className="codex-popover"
+                role="menu"
+                aria-label="Select Image Size"
+                style={{
+                  position: 'absolute',
+                  bottom: 34,
+                  left: 0,
+                  width: 215,
+                  padding: 5,
+                  zIndex: 'var(--z-popover)',
+                  '--transform-origin': 'bottom left',
+                } as React.CSSProperties}
+              >
+                <div style={{ padding: '4px 8px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' }}>
+                  Image Aspect Ratio
+                </div>
+                {IMAGE_SIZE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={opt.value === imageGenSize}
+                    className="pressable hover-surface"
+                    onClick={() => {
+                      onChangeImageGenSize?.(opt.value);
+                      setOpenMenu(null);
+                    }}
+                    style={{
+                      width: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '6px 8px',
+                      border: 'none',
+                      borderRadius: 7,
+                      background: 'transparent',
+                      textAlign: 'left',
+                      fontSize: 12,
+                    }}
+                  >
+                    <Check
+                      size={12}
+                      style={{ opacity: opt.value === imageGenSize ? 1 : 0, flexShrink: 0 }}
+                      aria-hidden="true"
+                    />
+                    <span>{opt.label}</span>
+                  </button>
+                ))}
+              </FrostedSurface>
+            )}
+          </div>
+        )}
 
         {/* Optional Dual-Model Fast Scout Pill (only shown when enabled in Settings) */}
         {showAdvancedDualModel && (

@@ -97,6 +97,10 @@ const api: SmolCodeApi = {
     ipcRenderer.invoke('smolcode:copy-generated-image-to-clipboard', filePath),
   detectLocalImageBackends: () =>
     ipcRenderer.invoke('smolcode:detect-local-image-backends'),
+  downloadLocalImageModel: (presetId) =>
+    ipcRenderer.invoke('smolcode:download-local-image-model', presetId),
+  pickLocalImageFile: (kind) =>
+    ipcRenderer.invoke('smolcode:pick-local-image-file', kind),
 
   onAgentEvent: (cb) => {
     const handler = (_ev: unknown, payload: AgentStreamEvent) => cb(payload);

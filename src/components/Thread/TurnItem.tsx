@@ -7,9 +7,19 @@ import {
 } from 'lucide-react';
 import { marked } from 'marked';
 import { useEffect, useMemo, useState } from 'react';
-import type { ThreadStatus, ToolCallLog, TurnRecord } from '../../shared/types';
+import type {
+  GeneratedImageRecord,
+  ThreadStatus,
+  ToolCallLog,
+  TurnRecord,
+} from '../../shared/types';
+import { ImageLightboxModal } from '../Modals/ImageLightboxModal';
 import { ActivityTimeline } from './ActivityTimeline';
 import { CodeBlock } from './CodeBlock';
+import {
+  GeneratedImageCard,
+  GeneratingImagePlaceholder,
+} from './GeneratedImageCard';
 import { PlanCard } from './PlanCard';
 import { QuestionCard } from './QuestionCard';
 
@@ -31,6 +41,9 @@ interface TurnItemProps {
   onPreviewFile?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenFileInEditor?: (filePath: string) => void;
   onRetryToolError?: (tool: ToolCallLog) => void;
+  onSaveGeneratedImage?: (image: GeneratedImageRecord) => Promise<void> | void;
+  onCopyGeneratedImage?: (image: GeneratedImageRecord) => Promise<boolean> | boolean | void;
+  onReuseImagePrompt?: (prompt: string) => void;
   onLayoutChange?: () => void;
 }
 
@@ -93,6 +106,9 @@ function deriveActiveStatusLabel(
     if (runningTool.toolName === 'save_skill') {
       return `Saving skill ${runningTool.summary}...`;
     }
+    if (runningTool.toolName === 'generate_image') {
+      return 'Generating image...';
+    }
     if (runningTool.toolName === 'repo_search') {
       return `Searching ${runningTool.summary}...`;
     }
@@ -137,11 +153,18 @@ export function TurnItem({
   onPreviewFile,
   onOpenFileInEditor,
   onRetryToolError,
+  onSaveGeneratedImage,
+  onCopyGeneratedImage,
+  onReuseImagePrompt,
   onLayoutChange,
 }: TurnItemProps) {
   const [thinkingOverride, setThinkingOverride] = useState<boolean | null>(null);
   const [copiedTurn, setCopiedTurn] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [lightboxImage, setLightboxImage] = useState<{
+    image: GeneratedImageRecord;
+    src: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!isStreaming) return;
@@ -259,6 +282,9 @@ export function TurnItem({
   }
 
   const statusLabel = isStreaming ? deriveActiveStatusLabel(turn, threadStatus) : '';
+  const runningImageTool = isStreaming
+    ? [...(turn.toolCalls ?? [])].reverse().find((t) => t.toolName === 'generate_image' && t.status === 'running')
+    : undefined;
 
   return (
     <div
@@ -373,6 +399,36 @@ export function TurnItem({
           plan={turn.plan}
           disabled={isStreaming}
           onApproveAndImplement={() => onApprovePlan?.(turn.id)}
+        />
+      )}
+
+      {runningImageTool && (
+        <GeneratingImagePlaceholder prompt={runningImageTool.summary} />
+      )}
+
+      {turn.generatedImages && turn.generatedImages.length > 0 && (
+        <div className="chatgpt-image-grid">
+          {turn.generatedImages.map((img) => (
+            <GeneratedImageCard
+              key={img.id}
+              image={img}
+              onExpand={(targetImg, src) => setLightboxImage({ image: targetImg, src })}
+              onSaveToWorkspace={onSaveGeneratedImage}
+              onCopyImage={onCopyGeneratedImage}
+              onReusePrompt={onReuseImagePrompt}
+              onLayoutChange={onLayoutChange}
+            />
+          ))}
+        </div>
+      )}
+
+      {lightboxImage && (
+        <ImageLightboxModal
+          image={lightboxImage.image}
+          src={lightboxImage.src}
+          onSaveToWorkspace={onSaveGeneratedImage}
+          onCopyImage={onCopyGeneratedImage}
+          onClose={() => setLightboxImage(null)}
         />
       )}
 

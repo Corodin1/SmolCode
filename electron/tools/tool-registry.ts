@@ -268,6 +268,45 @@ export const MUTATING_TOOLS: OllamaToolDef[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description:
+        'Generate an image locally using the configured local image backend (Ollama, sd.cpp, ComfyUI, or A1111) and render it inline in the thread.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description: 'Detailed visual prompt describing subject, style, lighting, and composition.',
+          },
+          negativePrompt: {
+            type: 'string',
+            description: 'Optional artifacts or elements to avoid.',
+          },
+          size: {
+            type: 'string',
+            enum: ['512x512', '768x768', '1024x1024', '1024x576', '576x1024'],
+            description: 'Output image dimensions (defaults to user Image Gen setting).',
+          },
+          steps: {
+            type: 'integer',
+            description: 'Optional inference steps (1-60).',
+          },
+          seed: {
+            type: 'integer',
+            description: 'Optional deterministic random seed.',
+          },
+          saveToRelPath: {
+            type: 'string',
+            description: 'Optional workspace-relative path (e.g. "assets/hero.png") to also save the PNG inside the project.',
+          },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
 ];
 
 export const PLANNING_TOOLS: OllamaToolDef[] = [
@@ -396,6 +435,7 @@ export function buildToolListForThread(
     hasActivePlan?: boolean;
     userPrompt?: string;
     hasSkillChips?: boolean;
+    hasImageGenSkill?: boolean;
   },
 ): OllamaToolDef[] {
   const readOnly =
@@ -408,11 +448,18 @@ export function buildToolListForThread(
   const wantsFileOps =
     !options?.userPrompt ||
     /\b(delete|remove|unlink|move|rename|cleanup|clean up)\b/i.test(promptLower);
+  const wantsImageGen =
+    Boolean(options?.hasImageGenSkill) ||
+    /\bimage[-_\s]?gen\b/i.test(promptLower) ||
+    /\b(generate|create|draw|paint|sketch|render|make|design)\b.{0,32}\b(image|picture|photo|illustration|icon|logo|sprite|wallpaper|art|artwork|banner|portrait|poster|mockup)\b/i.test(
+      promptLower,
+    );
 
   const scopedMutating = MUTATING_TOOLS.filter((t) => {
     const name = t.function.name;
     if (name === 'save_skill') return wantsSkill;
     if (name === 'delete_file' || name === 'move_file') return wantsFileOps;
+    if (name === 'generate_image') return wantsImageGen;
     return true;
   });
 

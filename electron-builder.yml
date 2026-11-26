@@ -14,6 +14,9 @@ asarUnpack:
   - node_modules/@lydell/**
   - node_modules/web-tree-sitter/**
   - node_modules/tree-sitter-wasms/**
+extraResources:
+  - from: resources/bin
+    to: bin
 npmRebuild: false
 win:
   icon: build/icon.ico

@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Composer } from '../../src/components/Composer/Composer';
 import { ComposerBar } from '../../src/components/Composer/ComposerBar';
+import { EffortSlider } from '../../src/components/Composer/EffortSlider';
 import { FrostedSurface } from '../../src/components/Common/FrostedSurface';
 import { resolveWindowMaterial } from '../../src/shared/theme-presets';
 import { CommandPalette } from '../../src/components/Modals/CommandPalette';
@@ -97,7 +98,7 @@ describe('SmolCode UI components', () => {
     expect(onUpdate).toHaveBeenCalledWith({ interactionMode: 'plan' });
 
     fireEvent.click(screen.getByTitle(/Reasoning Effort: Medium/i));
-    fireEvent.click(screen.getByText('Extra High'));
+    fireEvent.click(screen.getByRole('button', { name: 'Ultra' }));
     expect(onUpdate).toHaveBeenCalledWith({ effort: 'xhigh' });
 
     fireEvent.click(screen.getByTitle(/^Model:/i));
@@ -751,5 +752,169 @@ describe('SmolCode UI components', () => {
 
     expect(screen.getByText('Tool failed')).toBeInTheDocument();
     expect(screen.getByText(/already called on this unchanged workspace state/i)).toBeInTheDocument();
+  });
+
+  it('supports Codex-style EffortSlider keyboard & drag interactions, Create image mode, and ChatGPT image cards + lightbox', async () => {
+    const onUpdateThread = vi.fn();
+    const onChangeSize = vi.fn();
+    const onSaveImage = vi.fn().mockResolvedValue(undefined);
+    const onCopyImage = vi.fn().mockResolvedValue(true);
+    const onReusePrompt = vi.fn();
+
+    render(
+      <div>
+        <ComposerBar
+          thread={{
+            ...SAMPLE_THREAD,
+            draftChips: [
+              {
+                id: 'skill:image-gen',
+                kind: 'skill',
+                label: '/image-gen',
+                skillName: 'image-gen',
+              },
+            ],
+          }}
+          models={SAMPLE_MODELS}
+          vram={{ totalMb: 8192, freeMb: 4096, loadedModels: [] }}
+          latestTelemetry={null}
+          showAdvancedDualModel={false}
+          pinFastToCpu={false}
+          activeContextTokens={1200}
+          contextBudget={16384}
+          isBusy={false}
+          canSend={true}
+          followUpMode="queue"
+          recording={false}
+          transcribing={false}
+          imageGenSize="1024x1024"
+          onChangeImageGenSize={onChangeSize}
+          onToggleFollowUpMode={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onAttachFiles={vi.fn()}
+          onOpenSkills={vi.fn()}
+          onCompactThread={vi.fn()}
+          onUpdateThread={onUpdateThread}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+        />
+        <TurnItem
+          isStreaming={true}
+          threadStatus="thinking"
+          turn={{
+            id: 'turn-img-streaming',
+            threadId: 't1',
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              {
+                id: 'img-tool-1',
+                toolName: 'generate_image',
+                summary: 'Minimalist glass prism',
+                argsPreview: '{"prompt":"Minimalist glass prism"}',
+                status: 'running',
+              },
+            ],
+            createdAt: Date.now(),
+          }}
+        />
+        <TurnItem
+          isStreaming={false}
+          turn={{
+            id: 'turn-img-done',
+            threadId: 't1',
+            role: 'assistant',
+            content: 'Generated your prism artwork.',
+            generatedImages: [
+              {
+                id: 'gen-1',
+                threadId: 't1',
+                turnId: 'turn-img-done',
+                prompt: 'Minimalist glass prism on dark obsidian desk',
+                filePath: 'C:\\tmp\\prism.png',
+                dataUrl:
+                  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aW0cAAAAASUVORK5CYII=',
+                width: 1024,
+                height: 1024,
+                steps: 8,
+                seed: 12345,
+                model: 'x/flux2-klein',
+                backend: 'ollama',
+                durationMs: 2400,
+                createdAt: Date.now(),
+              },
+            ],
+            createdAt: Date.now(),
+          }}
+          onSaveGeneratedImage={onSaveImage}
+          onCopyGeneratedImage={onCopyImage}
+          onReuseImagePrompt={onReusePrompt}
+        />
+      </div>,
+    );
+
+    // Codex Effort Slider keyboard stepping
+    fireEvent.click(screen.getByTitle(/Reasoning Effort: Medium/i));
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' });
+    expect(slider).toHaveAttribute('aria-valuenow', '1');
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
+    expect(onUpdateThread).toHaveBeenCalledWith({ effort: 'high' });
+    fireEvent.keyDown(slider, { key: 'End' });
+    expect(onUpdateThread).toHaveBeenCalledWith({ effort: 'xhigh' });
+    fireEvent.keyDown(slider, { key: 'Home' });
+    expect(onUpdateThread).toHaveBeenCalledWith({ effort: 'low' });
+
+    // Inline aspect ratio selector when Create image is active
+    fireEvent.click(screen.getByTitle(/Image size: Square/i));
+    fireEvent.click(screen.getByText(/Landscape \(1024×576\)/i));
+    expect(onChangeSize).toHaveBeenCalledWith('1024x576');
+
+    // Generating placeholder procedural ocean canvas (no text, no icons) + completed image card + lightbox
+    const generatingStatus = screen.getByRole('status', { name: 'Generating image' });
+    expect(generatingStatus).toBeInTheDocument();
+    expect(generatingStatus.textContent).toBe('');
+    expect(generatingStatus.querySelector('svg')).toBeNull();
+    expect(generatingStatus.querySelector('canvas.gemini-ocean-canvas')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save image to workspace' }));
+      await Promise.resolve();
+    });
+    expect(onSaveImage).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reuse image prompt' }));
+    expect(onReusePrompt).toHaveBeenCalledWith('Minimalist glass prism on dark obsidian desk');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Inspect generated image: Minimalist glass prism/i }),
+    );
+    const lightbox = screen.getByRole('dialog', { name: 'Generated image preview' });
+    expect(lightbox).toBeInTheDocument();
+    expect(within(lightbox).getByText(/Backend: ollama/i)).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Generated image preview' })).not.toBeInTheDocument();
+  });
+
+  it('renders animated cosmic starfield on Ultra effort mode and inline description in Settings variant', () => {
+    const onChange = vi.fn();
+    const { container, rerender } = render(
+      <EffortSlider variant="popover" value="low" onChange={onChange} />,
+    );
+
+    expect(screen.getByRole('slider', { name: 'Reasoning effort' })).toHaveAttribute(
+      'aria-valuetext',
+      'Low',
+    );
+    expect(container.querySelector('.codex-effort-stars')).not.toBeInTheDocument();
+    expect(container.querySelector('.codex-effort-footer')).not.toBeInTheDocument();
+
+    rerender(<EffortSlider variant="inline" value="xhigh" onChange={onChange} />);
+    expect(screen.getByRole('slider', { name: 'Reasoning effort' })).toHaveAttribute(
+      'aria-valuetext',
+      'Ultra',
+    );
+    expect(container.querySelector('.codex-effort-stars')).toBeInTheDocument();
+    expect(container.querySelectorAll('.codex-effort-star').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Ultra · 6\.1k tok/i)).toBeInTheDocument();
   });
 });

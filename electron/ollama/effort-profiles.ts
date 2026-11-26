@@ -55,7 +55,7 @@ export const EFFORT_PROFILES: Record<EffortLevel, EffortProfile> = {
   },
   xhigh: {
     level: 'xhigh',
-    label: 'Extra High',
+    label: 'Ultra',
     mainThink: true,
     numPredict: 6144,
     guidanceHint:

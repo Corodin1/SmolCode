@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type {
   AgentStreamEvent,
@@ -76,6 +76,7 @@ import {
   runWriteFilePaste,
 } from '../tools/fs-tools';
 import { commandNeedsApproval, executeSandboxedCommand } from '../tools/shell-tools';
+import { runLocalImageGeneration } from '../tools/image-gen';
 import {
   buildToolListForThread,
   FAST_SCOUT_SCHEMA,
@@ -118,6 +119,7 @@ function summarizeToolArgs(name: string, args: Record<string, unknown>): string 
   if (name === 'web_lookup') return String(args.url ?? args.query ?? 'lookup');
   if (name === 'read_skill') return `/${String(args.name ?? '')}`;
   if (name === 'save_skill') return `/${String(args.name ?? '')} (${String(args.scope ?? 'repo')})`;
+  if (name === 'generate_image') return String(args.prompt ?? 'image').slice(0, 60);
   if (name === 'repo_search') return `"${String(args.query ?? '')}"`;
   if (name === 'read_symbol')
     return `${String(args.filePath ?? '')}::${String(args.symbolName ?? '')}`;
@@ -871,12 +873,16 @@ export class AgentOrchestrator {
       const agentsPrompt = loadWorkspaceAgentsPrompt(params.projectRoot);
       const agentsHash = createHash('sha1').update(agentsPrompt).digest('hex').slice(0, 12);
       const hasSkillChips = params.chips.some((c) => c.kind === 'skill');
+      const hasImageGenSkill = params.chips.some(
+        (c) => c.kind === 'skill' && (c.skillName ?? c.label).replace(/^\/+/, '').toLowerCase() === 'image-gen',
+      );
 
       const threadTools = buildToolListForThread(thread.interactionMode, mcpServers, {
         webLookupEnabled,
         hasActivePlan,
         userPrompt: params.userPrompt,
         hasSkillChips,
+        hasImageGenSkill,
       });
       const toolsHash = createHash('sha1')
         .update(JSON.stringify(threadTools))
@@ -1133,6 +1139,7 @@ export class AgentOrchestrator {
       if (
         profile.runFastScout &&
         useDistinctFastModel &&
+        !hasImageGenSkill &&
         prefetchedSlices.length < 2 &&
         index.files.size > 0
       ) {
@@ -2068,6 +2075,7 @@ export class AgentOrchestrator {
         ...assistantTurn,
         ...(persistedTurn?.plan ? { plan: persistedTurn.plan } : {}),
         ...(persistedTurn?.questionPrompt ? { questionPrompt: persistedTurn.questionPrompt } : {}),
+        ...(persistedTurn?.generatedImages ? { generatedImages: persistedTurn.generatedImages } : {}),
         content: finalAnswer,
         thinking: fullThinking || undefined,
         toolCalls: toolLogs,
@@ -2487,6 +2495,7 @@ export class AgentOrchestrator {
         toolName === 'delete_file' ||
         toolName === 'move_file' ||
         toolName === 'save_skill' ||
+        toolName === 'generate_image' ||
         toolName.startsWith('__code_paste_'))
     ) {
       return {
@@ -2656,6 +2665,90 @@ export class AgentOrchestrator {
         output: res.output,
         isError: res.isError,
         isReadOnlySlice: true,
+      };
+    }
+
+    if (toolName === 'generate_image') {
+      const settings = this.store.getSettings();
+      const saveToRelPath = args.saveToRelPath ? String(args.saveToRelPath).trim() : '';
+      if (saveToRelPath && thread.approvalPolicy === 'read-only') {
+        return {
+          output: 'Blocked: thread approval policy is read-only; cannot write generated image into workspace.',
+          denied: true,
+          isError: true,
+        };
+      }
+      if (saveToRelPath) {
+        const resolvedTarget = resolveInsideWorkdir(workdir, saveToRelPath);
+        if (!resolvedTarget.inside) {
+          return {
+            output: `Refusing to save generated image outside workspace: ${saveToRelPath}`,
+            denied: true,
+            isError: true,
+          };
+        }
+      }
+
+      const result = await runLocalImageGeneration({
+        threadId: thread.id,
+        turnId: assistantTurnId,
+        prompt: String(args.prompt ?? ''),
+        negativePrompt: args.negativePrompt ? String(args.negativePrompt) : undefined,
+        size: args.size ? String(args.size) : settings.imageGenDefaultSize,
+        steps: args.steps !== undefined ? Number(args.steps) : undefined,
+        seed: args.seed !== undefined ? Number(args.seed) : undefined,
+        settings,
+        signal: params.signal,
+        beforeGenerate: async (backend, targetModel) => {
+          const running = await this.ollama.listRunningModels();
+          for (const loaded of running) {
+            if (backend === 'ollama' && loaded.name === targetModel) continue;
+            await this.ollama.unloadModel(loaded.name);
+          }
+        },
+      });
+
+      if (!result.ok || !result.image) {
+        return {
+          output: result.error || 'Local image generation failed.',
+          isError: true,
+        };
+      }
+
+      const currentTurn = this.store
+        .listTurns(thread.id)
+        .find((t) => t.id === assistantTurnId);
+      const nextImages = [...(currentTurn?.generatedImages ?? []), result.image];
+      this.store.updateTurn(assistantTurnId, { generatedImages: nextImages });
+      this.emit({
+        type: 'image_generated',
+        threadId: thread.id,
+        turnId: assistantTurnId,
+        image: result.image,
+      });
+
+      let savedRel: string | undefined;
+      if (saveToRelPath) {
+        const resolvedTarget = resolveInsideWorkdir(workdir, saveToRelPath);
+        if (resolvedTarget.inside) {
+          mkdirSync(dirname(resolvedTarget.absPath), { recursive: true });
+          copyFileSync(result.image.filePath, resolvedTarget.absPath);
+          savedRel = resolvedTarget.relPath;
+          loopGuard.invalidateOnMutation(resolvedTarget.relPath);
+          this.indexer.markDirty(workdir, resolvedTarget.relPath, false);
+          if (!ledger.modifiedFiles.includes(resolvedTarget.relPath)) {
+            ledger.modifiedFiles.push(resolvedTarget.relPath);
+          }
+        }
+      }
+
+      return {
+        output: [
+          `Generated ${result.image.width}x${result.image.height} image via ${result.image.backend} (${result.image.model}) in ${(result.image.durationMs / 1000).toFixed(1)}s.`,
+          `Seed: ${result.image.seed}, Steps: ${result.image.steps}.`,
+          savedRel ? `Saved to workspace: ${savedRel}.` : 'Rendered inline in thread.',
+        ].join(' '),
+        filePath: savedRel,
       };
     }
 

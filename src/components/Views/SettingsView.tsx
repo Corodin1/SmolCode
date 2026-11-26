@@ -3,7 +3,9 @@ import {
   Bell,
   Check,
   Cpu,
+  Download,
   FolderCog,
+  FolderOpen,
   Keyboard,
   Palette,
   Plug,
@@ -11,16 +13,21 @@ import {
   Sliders,
   Trash2,
   Volume2,
+  Wand2,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ACCENT_SWATCHES, THEME_PRESETS } from '../../shared/theme-presets';
 import type {
   AccentColor,
   AppSettings,
   ApprovalPolicy,
-  EffortLevel,
   FontSizeScale,
   GlassIntensity,
+  ImageGenProvider,
+  ImageGenSize,
+  ImageModelDownloadProgress,
+  ImageModelPresetId,
+  LocalImageBackendStatus,
   McpServerConfig,
   OllamaModelInfo,
   PreferredEditor,
@@ -34,6 +41,7 @@ import type {
   VramStatus,
 } from '../../shared/types';
 import { playCompletionChime } from '../../utils/audio-notify';
+import { EffortSlider } from '../Composer/EffortSlider';
 import { KEYBOARD_SHORTCUTS } from '../Modals/ShortcutsModal';
 
 interface SettingsViewProps {
@@ -94,11 +102,76 @@ export function SettingsView({
   const [mcpCommand, setMcpCommand] = useState('');
   const [mcpArgs, setMcpArgs] = useState('');
   const [mcpUrl, setMcpUrl] = useState('');
+  const [imageBackends, setImageBackends] = useState<LocalImageBackendStatus | null>(null);
+  const [probingImageBackends, setProbingImageBackends] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<ImageModelDownloadProgress | null>(null);
+
+  const probeImageBackends = useCallback(async () => {
+    if (!window.smolcode?.detectLocalImageBackends) return;
+    setProbingImageBackends(true);
+    try {
+      const res = await window.smolcode.detectLocalImageBackends();
+      setImageBackends(res);
+    } finally {
+      setProbingImageBackends(false);
+    }
+  }, []);
+
+  const handleDownloadPreset = async (presetId: ImageModelPresetId) => {
+    if (!window.smolcode?.downloadLocalImageModel) return;
+    setDownloadProgress({
+      presetId,
+      fileName: presetId,
+      receivedBytes: 0,
+      totalBytes: 0,
+      status: 'downloading',
+    });
+    const res = await window.smolcode.downloadLocalImageModel(presetId);
+    if (res.ok && res.savedPath) {
+      setDraft((prev) => ({ ...prev, sdCppModelPath: res.savedPath! }));
+      await applySettings({ sdCppModelPath: res.savedPath });
+      await probeImageBackends();
+    } else if (!res.ok) {
+      setDownloadProgress({
+        presetId,
+        fileName: presetId,
+        receivedBytes: 0,
+        totalBytes: 0,
+        status: 'error',
+        error: res.error || 'Download failed',
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!window.smolcode?.onAgentEvent) return;
+    return window.smolcode.onAgentEvent((ev) => {
+      if (ev.type === 'image_model_download_progress') {
+        setDownloadProgress(ev.progress);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (!envProjectId || !window.smolcode) return;
     void window.smolcode.getProjectEnvironment(envProjectId).then(setProjEnv);
   }, [envProjectId]);
+
+  useEffect(() => {
+    if (tab !== 'models' || !window.smolcode?.detectLocalImageBackends) return;
+    let cancelled = false;
+    void window.smolcode
+      .detectLocalImageBackends()
+      .then((res) => {
+        if (!cancelled) setImageBackends(res);
+      })
+      .catch(() => {
+        // Ignore probe failures in test/offline environments
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
 
   const applySettings = async (patch: Partial<AppSettings>) => {
     const next = { ...draft, ...patch };
@@ -652,57 +725,52 @@ export function SettingsView({
                   </div>
                 </label>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
-                    <span style={{ fontWeight: 500 }}>Default Model</span>
-                    <select
-                      value={draft.defaultMainModel}
-                      onChange={(e) =>
-                        void applySettings({
-                          defaultMainModel: e.target.value,
-                          ...(draft.showAdvancedDualModel ? {} : { defaultFastModel: e.target.value }),
-                        })
-                      }
-                      style={{
-                        height: 34,
-                        padding: '0 8px',
-                        borderRadius: 8,
-                        border: '1px solid var(--border-default)',
-                        background: 'var(--bg-elevated)',
-                      }}
-                    >
-                      {models.map((m) => (
-                        <option key={m.name} value={m.name}>
-                          {m.name} ({m.parameterSize})
-                        </option>
-                      ))}
-                      {draft.defaultMainModel && !models.some((m) => m.name === draft.defaultMainModel) && (
-                        <option value={draft.defaultMainModel}>{draft.defaultMainModel}</option>
-                      )}
-                    </select>
-                  </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                  <span style={{ fontWeight: 500 }}>Default Model</span>
+                  <select
+                    value={draft.defaultMainModel}
+                    onChange={(e) =>
+                      void applySettings({
+                        defaultMainModel: e.target.value,
+                        ...(draft.showAdvancedDualModel ? {} : { defaultFastModel: e.target.value }),
+                      })
+                    }
+                    style={{
+                      height: 34,
+                      padding: '0 8px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border-default)',
+                      background: 'var(--bg-elevated)',
+                    }}
+                  >
+                    {models.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name} ({m.parameterSize})
+                      </option>
+                    ))}
+                    {draft.defaultMainModel && !models.some((m) => m.name === draft.defaultMainModel) && (
+                      <option value={draft.defaultMainModel}>{draft.defaultMainModel}</option>
+                    )}
+                  </select>
+                </label>
 
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
-                    <span style={{ fontWeight: 500 }}>Default Reasoning Effort</span>
-                    <select
-                      value={draft.defaultEffort}
-                      onChange={(e) =>
-                        void applySettings({ defaultEffort: e.target.value as EffortLevel })
-                      }
-                      style={{
-                        height: 34,
-                        padding: '0 8px',
-                        borderRadius: 8,
-                        border: '1px solid var(--border-default)',
-                        background: 'var(--bg-elevated)',
-                      }}
-                    >
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                      <option value="xhigh">Extra High</option>
-                    </select>
-                  </label>
+                <div
+                  style={{
+                    padding: 14,
+                    borderRadius: 10,
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--bg-elevated)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ fontSize: 12.5, fontWeight: 500 }}>Default Reasoning Effort</span>
+                  <EffortSlider
+                    variant="inline"
+                    value={draft.defaultEffort}
+                    onChange={(nextEffort) => void applySettings({ defaultEffort: nextEffort })}
+                  />
                 </div>
 
                 {/* Optional Modular Dual-Model & VRAM Controls */}
@@ -786,6 +854,382 @@ export function SettingsView({
                   <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
                     VRAM: {vram.totalMb > 0 ? `${vram.freeMb} / ${vram.totalMb} MiB free` : 'Probe unavailable'}
                   </div>
+                </div>
+
+                {/* Local Image Generation (/image-gen skill & generate_image tool) */}
+                <div
+                  style={{
+                    padding: 14,
+                    borderRadius: 12,
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--bg-sidebar)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <Wand2 size={14} style={{ color: 'var(--accent-brand)' }} aria-hidden="true" />
+                      <span style={{ fontSize: 13.5, fontWeight: 600 }}>Local Image Generation</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="pressable hover-surface"
+                      disabled={probingImageBackends}
+                      onClick={() => void probeImageBackends()}
+                      style={{
+                        height: 26,
+                        padding: '0 9px',
+                        borderRadius: 7,
+                        border: '1px solid var(--border-default)',
+                        background: 'var(--bg-elevated)',
+                        fontSize: 11.5,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                      }}
+                    >
+                      <RefreshCw size={11} aria-hidden="true" />
+                      <span>{probingImageBackends ? 'Scanning...' : 'Detect backends'}</span>
+                    </button>
+                  </div>
+
+                  {imageBackends && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      <span
+                        className="codex-pill"
+                        data-highlighted={Boolean(imageBackends.sdCppPath)}
+                        style={{ height: 24, fontSize: 11 }}
+                      >
+                        {imageBackends.sdCppBundled
+                          ? 'Bundled Engine: sd-cli (ready)'
+                          : `sd.cpp: ${imageBackends.sdCppPath ? 'found' : 'not found'}`}
+                      </span>
+                      <span
+                        className="codex-pill"
+                        data-highlighted={imageBackends.localModelFiles.length > 0 || Boolean(draft.sdCppModelPath)}
+                        style={{ height: 24, fontSize: 11 }}
+                      >
+                        Local Models: {imageBackends.localModelFiles.length}
+                      </span>
+                      <span
+                        className="codex-pill"
+                        data-highlighted={imageBackends.ollamaImageModels.length > 0}
+                        style={{ height: 24, fontSize: 11 }}
+                      >
+                        Ollama Image: {imageBackends.ollamaImageModels.length > 0 ? imageBackends.ollamaImageModels.join(', ') : 'none pulled'}
+                      </span>
+                      <span
+                        className="codex-pill"
+                        data-highlighted={imageBackends.comfyUiUp}
+                        style={{ height: 24, fontSize: 11 }}
+                      >
+                        ComfyUI: {imageBackends.comfyUiUp ? 'online' : 'offline'}
+                      </span>
+                      <span
+                        className="codex-pill"
+                        data-highlighted={imageBackends.a1111Up}
+                        style={{ height: 24, fontSize: 11 }}
+                      >
+                        A1111: {imageBackends.a1111Up ? 'online' : 'offline'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Built-in 1-click starter model download for bundled sd-cli engine */}
+                  <div
+                    style={{
+                      padding: 10,
+                      borderRadius: 9,
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--bg-elevated)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <div style={{ fontSize: 12 }}>
+                        <div style={{ fontWeight: 500 }}>Starter Models for Bundled Engine</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          SmolCode bundles sd-cli (Vulkan) internally — download a single-file model below or pick your own checkpoint.
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      <button
+                        type="button"
+                        className="codex-pill pressable hover-surface"
+                        disabled={downloadProgress?.status === 'downloading'}
+                        onClick={() => void handleDownloadPreset('dreamshaper-8')}
+                        style={{ height: 28 }}
+                      >
+                        <Download size={12} aria-hidden="true" />
+                        <span>DreamShaper 8 (2.0 GB · 8GB GPU)</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="codex-pill pressable hover-surface"
+                        disabled={downloadProgress?.status === 'downloading'}
+                        onClick={() => void handleDownloadPreset('sdxl-turbo')}
+                        style={{ height: 28 }}
+                      >
+                        <Download size={12} aria-hidden="true" />
+                        <span>SDXL Turbo (6.5 GB · 4-step)</span>
+                      </button>
+                    </div>
+                    {downloadProgress && (
+                      <div style={{ fontSize: 11.5, color: downloadProgress.status === 'error' ? 'var(--accent-red)' : 'var(--text-secondary)' }}>
+                        {downloadProgress.status === 'downloading'
+                          ? `Downloading ${downloadProgress.fileName}: ${(downloadProgress.receivedBytes / 1_048_576).toFixed(1)} MB${
+                              downloadProgress.totalBytes > 0
+                                ? ` / ${(downloadProgress.totalBytes / 1_048_576).toFixed(0)} MB (${Math.round((downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100)}%)`
+                                : ''
+                            }`
+                          : downloadProgress.status === 'done'
+                            ? `Ready: ${downloadProgress.savedPath}`
+                            : `Download failed: ${downloadProgress.error}`}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 500 }}>Backend Provider</span>
+                      <select
+                        value={draft.imageGenProvider}
+                        onChange={(e) =>
+                          void applySettings({
+                            imageGenProvider: e.target.value as ImageGenProvider,
+                          })
+                        }
+                        style={{
+                          height: 32,
+                          padding: '0 8px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border-default)',
+                          background: 'var(--bg-canvas)',
+                        }}
+                      >
+                        <option value="auto">Auto (best available local)</option>
+                        <option value="ollama">Ollama (x/flux2-klein / x/z-image-turbo)</option>
+                        <option value="sd-cpp">stable-diffusion.cpp (sd-cli)</option>
+                        <option value="comfyui">ComfyUI (local server)</option>
+                        <option value="a1111">Automatic1111 / Forge API</option>
+                      </select>
+                    </label>
+
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 500 }}>Default Image Size</span>
+                      <select
+                        value={draft.imageGenDefaultSize}
+                        onChange={(e) =>
+                          void applySettings({
+                            imageGenDefaultSize: e.target.value as ImageGenSize,
+                          })
+                        }
+                        style={{
+                          height: 32,
+                          padding: '0 8px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border-default)',
+                          background: 'var(--bg-canvas)',
+                        }}
+                      >
+                        <option value="1024x1024">1024×1024 (Square 1:1)</option>
+                        <option value="1024x576">1024×576 (Landscape 16:9)</option>
+                        <option value="576x1024">576×1024 (Portrait 9:16)</option>
+                        <option value="768x768">768×768 (Balanced)</option>
+                        <option value="512x512">512×512 (Fast draft)</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 500 }}>Ollama Image Model</span>
+                      <input
+                        type="text"
+                        value={draft.ollamaImageModel}
+                        placeholder="x/flux2-klein"
+                        onChange={(e) => setDraft({ ...draft, ollamaImageModel: e.target.value })}
+                        onBlur={() => void applySettings({ ollamaImageModel: draft.ollamaImageModel })}
+                        style={{
+                          height: 32,
+                          padding: '0 9px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border-default)',
+                          background: 'var(--bg-canvas)',
+                        }}
+                      />
+                    </label>
+
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 500 }}>Local Server URL (ComfyUI / A1111)</span>
+                      <input
+                        type="url"
+                        value={draft.imageGenLocalUrl}
+                        placeholder="http://127.0.0.1:8188"
+                        onChange={(e) => setDraft({ ...draft, imageGenLocalUrl: e.target.value })}
+                        onBlur={() => void applySettings({ imageGenLocalUrl: draft.imageGenLocalUrl })}
+                        style={{
+                          height: 32,
+                          padding: '0 9px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border-default)',
+                          background: 'var(--bg-canvas)',
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 500 }}>sd-cli Executable Override (optional)</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          type="text"
+                          value={draft.sdCppPath}
+                          placeholder="Uses bundled sd-cli automatically"
+                          onChange={(e) => setDraft({ ...draft, sdCppPath: e.target.value })}
+                          onBlur={() => void applySettings({ sdCppPath: draft.sdCppPath })}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            height: 32,
+                            padding: '0 9px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-canvas)',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="pressable hover-surface"
+                          aria-label="Browse sd-cli binary"
+                          onClick={() => {
+                            void window.smolcode?.pickLocalImageFile('binary').then((picked) => {
+                              if (picked) {
+                                setDraft((p) => ({ ...p, sdCppPath: picked }));
+                                void applySettings({ sdCppPath: picked });
+                              }
+                            });
+                          }}
+                          style={{
+                            height: 32,
+                            padding: '0 9px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-elevated)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <FolderOpen size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </label>
+
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 500 }}>Local Model / Checkpoint Path</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          type="text"
+                          value={draft.sdCppModelPath}
+                          placeholder="Auto-uses ~/.smolcode/models/image/*"
+                          onChange={(e) => setDraft({ ...draft, sdCppModelPath: e.target.value })}
+                          onBlur={() => void applySettings({ sdCppModelPath: draft.sdCppModelPath })}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            height: 32,
+                            padding: '0 9px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-canvas)',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="pressable hover-surface"
+                          aria-label="Browse diffusion model"
+                          onClick={() => {
+                            void window.smolcode?.pickLocalImageFile('model').then((picked) => {
+                              if (picked) {
+                                setDraft((p) => ({ ...p, sdCppModelPath: picked }));
+                                void applySettings({ sdCppModelPath: picked });
+                              }
+                            });
+                          }}
+                          style={{
+                            height: 32,
+                            padding: '0 9px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-elevated)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <FolderOpen size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </label>
+                  </div>
+
+                  <details style={{ fontSize: 12 }}>
+                    <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                      Advanced sd.cpp options (VAE & CLI flags)
+                    </summary>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 8 }}>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12 }}>
+                        <span>VAE Path (optional)</span>
+                        <input
+                          type="text"
+                          value={draft.sdCppVaePath}
+                          placeholder="C:\Models\ae.safetensors"
+                          onChange={(e) => setDraft({ ...draft, sdCppVaePath: e.target.value })}
+                          onBlur={() => void applySettings({ sdCppVaePath: draft.sdCppVaePath })}
+                          style={{
+                            height: 30,
+                            padding: '0 8px',
+                            borderRadius: 7,
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-canvas)',
+                          }}
+                        />
+                      </label>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12 }}>
+                        <span>Extra sd-cli Args (optional)</span>
+                        <input
+                          type="text"
+                          value={draft.sdCppExtraArgs}
+                          placeholder="--cfg-scale 1.0 --diffusion-fa"
+                          onChange={(e) => setDraft({ ...draft, sdCppExtraArgs: e.target.value })}
+                          onBlur={() => void applySettings({ sdCppExtraArgs: draft.sdCppExtraArgs })}
+                          style={{
+                            height: 30,
+                            padding: '0 8px',
+                            borderRadius: 7,
+                            border: '1px solid var(--border-default)',
+                            background: 'var(--bg-canvas)',
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </details>
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.imageGenUnloadOllama}
+                      onChange={(e) =>
+                        void applySettings({ imageGenUnloadOllama: e.target.checked })
+                      }
+                    />
+                    <span>Unload active Ollama text LLM before generating images (recommended for 8 GB VRAM)</span>
+                  </label>
                 </div>
               </>
             )}

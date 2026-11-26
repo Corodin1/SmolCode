@@ -27,11 +27,16 @@ describe('Expanded Skills discovery, authoring, and SmolCode repo skills', () =>
     const skills = discoverSkills(smolRoot);
     const names = skills.map((s) => s.name);
 
-    // Built-in universal starters (including grill-me)
+    // Built-in universal starters (including grill-me and image-gen)
     expect(BUILTIN_SKILLS.some((s) => s.name === 'grill-me')).toBe(true);
+    expect(BUILTIN_SKILLS.some((s) => s.name === 'image-gen')).toBe(true);
     for (const bi of BUILTIN_SKILLS) {
       expect(names).toContain(bi.name);
     }
+
+    const imageGen = readSkillDetail(skills, 'image-gen');
+    expect(imageGen.found).toBe(true);
+    expect(imageGen.output).toContain('generate_image');
 
     const grill = readSkillDetail(skills, 'grill-me');
     expect(grill.found).toBe(true);

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  GeneratedImageRecord,
   ProjectRecord,
   ThreadRecord,
   ToolCallLog,
@@ -35,6 +36,9 @@ interface ThreadViewProps {
   onPreviewFile?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenFileInEditor?: (filePath: string) => void;
   onRetryToolError?: (tool: ToolCallLog) => void;
+  onSaveGeneratedImage?: (image: GeneratedImageRecord) => Promise<void> | void;
+  onCopyGeneratedImage?: (image: GeneratedImageRecord) => Promise<boolean> | boolean | void;
+  onReuseImagePrompt?: (prompt: string) => void;
 }
 
 const STARTER_PROMPTS = [
@@ -84,6 +88,9 @@ export function ThreadView({
   onPreviewFile,
   onOpenFileInEditor,
   onRetryToolError,
+  onSaveGeneratedImage,
+  onCopyGeneratedImage,
+  onReuseImagePrompt,
 }: ThreadViewProps) {
   'use no memo';
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -174,6 +181,8 @@ export function ThreadView({
       )
       .filter(Boolean)
       .join('|') ?? '';
+  const lastTurnQuestionId = lastTurn?.questionPrompt?.id;
+  const lastGeneratedImagesCount = lastTurn?.generatedImages?.length ?? 0;
   const threadApprovalsCount = approvals.filter((a) => a.threadId === thread?.id).length;
 
   useEffect(() => {
@@ -187,7 +196,8 @@ export function ThreadView({
     lastToolDigest,
     lastTurn?.plan?.id,
     planDigest,
-    lastTurn?.questionPrompt?.id,
+    lastTurnQuestionId,
+    lastGeneratedImagesCount,
     threadApprovalsCount,
     scrollToBottom,
   ]);
@@ -451,6 +461,9 @@ export function ThreadView({
                     onPreviewFile={onPreviewFile}
                     onOpenFileInEditor={onOpenFileInEditor}
                     onRetryToolError={onRetryToolError}
+                    onSaveGeneratedImage={onSaveGeneratedImage}
+                    onCopyGeneratedImage={onCopyGeneratedImage}
+                    onReuseImagePrompt={onReuseImagePrompt}
                     onLayoutChange={() => virtualizer.measure()}
                   />
                 </div>

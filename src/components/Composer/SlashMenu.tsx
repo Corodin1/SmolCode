@@ -1,4 +1,4 @@
-import { Command, Sparkles } from 'lucide-react';
+import { Command, Sparkles, Wand2 } from 'lucide-react';
 import type { SkillEntry } from '../../shared/types';
 import { FrostedSurface } from '../Common/FrostedSurface';
 
@@ -73,6 +73,8 @@ export function SlashMenu({ items, selectedIdx, onSelect }: SlashMenuProps) {
           >
             {item.kind === 'command' ? (
               <Command size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden="true" />
+            ) : item.skill.name === 'image-gen' ? (
+              <Wand2 size={13} style={{ color: 'var(--accent-brand)', flexShrink: 0 }} aria-hidden="true" />
             ) : (
               <Sparkles size={13} style={{ color: 'var(--accent-blue)', flexShrink: 0 }} aria-hidden="true" />
             )}

@@ -65,8 +65,22 @@ export interface GeneratedImageRecord {
   createdAt: number;
 }
 
+export type ImageModelPresetId = 'dreamshaper-8' | 'sdxl-turbo';
+
+export interface ImageModelDownloadProgress {
+  presetId: ImageModelPresetId;
+  fileName: string;
+  receivedBytes: number;
+  totalBytes: number;
+  status: 'downloading' | 'done' | 'error';
+  savedPath?: string;
+  error?: string;
+}
+
 export interface LocalImageBackendStatus {
   sdCppPath: string | null;
+  sdCppBundled: boolean;
+  localModelFiles: string[];
   comfyUiUp: boolean;
   a1111Up: boolean;
   ollamaImageModels: string[];
@@ -421,6 +435,7 @@ export type AgentStreamEvent =
   | { type: 'turn_completed'; threadId: string; turn: TurnRecord; threadTitle?: string }
   | { type: 'turn_error'; threadId: string; turnId: string; message: string }
   | { type: 'image_generated'; threadId: string; turnId: string; image: GeneratedImageRecord }
+  | { type: 'image_model_download_progress'; progress: ImageModelDownloadProgress }
   | { type: 'queue_updated'; activeThreadId: string | null; queuedThreadIds: string[] };
 
 export interface SmolCodeApi {
@@ -574,6 +589,10 @@ export interface SmolCodeApi {
   }): Promise<{ savedRelPath: string; absPath: string }>;
   copyGeneratedImageToClipboard(filePath: string): Promise<boolean>;
   detectLocalImageBackends(): Promise<LocalImageBackendStatus>;
+  downloadLocalImageModel(
+    presetId: ImageModelPresetId,
+  ): Promise<{ ok: boolean; savedPath?: string; error?: string }>;
+  pickLocalImageFile(kind: 'binary' | 'model' | 'vae'): Promise<string | null>;
 
   // Subscriptions
   onAgentEvent(cb: (event: AgentStreamEvent) => void): () => void;

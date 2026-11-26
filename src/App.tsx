@@ -589,6 +589,43 @@ export function App() {
                     content: fixPrompt,
                   });
                 }}
+                onSaveGeneratedImage={async (image) => {
+                  if (!ws.activeProject) return;
+                  const res = await window.smolcode.saveGeneratedImageToWorkspace({
+                    projectId: ws.activeProject.id,
+                    sourcePath: image.filePath,
+                  });
+                  ws.showToast(`Saved image to ${res.savedRelPath}`);
+                }}
+                onCopyGeneratedImage={async (image) => {
+                  const ok = await window.smolcode.copyGeneratedImageToClipboard(image.filePath);
+                  if (ok) ws.showToast('Image copied to clipboard');
+                  return ok;
+                }}
+                onReuseImagePrompt={(prompt) => {
+                  if (!ws.activeThread) return;
+                  const existing = ws.activeThread.draftChips ?? [];
+                  const hasImgSkill = existing.some(
+                    (c) => c.kind === 'skill' && (c.skillName ?? c.label).replace(/^\/+/, '') === 'image-gen',
+                  );
+                  void ws.updateThread(ws.activeThread.id, {
+                    draftText: prompt,
+                    ...(hasImgSkill
+                      ? {}
+                      : {
+                          draftChips: [
+                            ...existing,
+                            {
+                              id: 'skill:image-gen',
+                              kind: 'skill',
+                              label: '/image-gen',
+                              skillName: 'image-gen',
+                            },
+                          ],
+                        }),
+                  });
+                  setComposerRevision((r) => r + 1);
+                }}
               />
 
               {ws.activeThread && (
@@ -604,6 +641,10 @@ export function App() {
                   pinFastToCpu={ws.settings.pinFastToCpu}
                   activeContextTokens={latestTelemetry?.activeContextTokens ?? 0}
                   contextBudget={latestTelemetry?.contextBudget ?? 16384}
+                  imageGenSize={ws.settings.imageGenDefaultSize}
+                  onChangeImageGenSize={(size) =>
+                    void ws.updateSettings({ imageGenDefaultSize: size })
+                  }
                   onUpdateThread={(patch) => void ws.updateThread(ws.activeThread!.id, patch)}
                   onSendPrompt={(content, chips) =>
                     void window.smolcode.sendPrompt({

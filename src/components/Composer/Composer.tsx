@@ -6,12 +6,14 @@ import {
   MessageSquare,
   Sparkles,
   Terminal,
+  Wand2,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation';
 import type {
   ComposerChip,
+  ImageGenSize,
   OllamaModelInfo,
   SearchSuggestion,
   SkillEntry,
@@ -34,6 +36,8 @@ interface ComposerProps {
   pinFastToCpu: boolean;
   activeContextTokens: number;
   contextBudget: number;
+  imageGenSize?: ImageGenSize;
+  onChangeImageGenSize?: (size: ImageGenSize) => void;
   onUpdateThread: (patch: Partial<ThreadRecord>) => void;
   onSendPrompt: (content: string, chips: ComposerChip[]) => void;
   onSteerThread: (content: string, chips: ComposerChip[]) => void;
@@ -56,6 +60,8 @@ export function Composer({
   pinFastToCpu,
   activeContextTokens,
   contextBudget,
+  imageGenSize,
+  onChangeImageGenSize,
   onUpdateThread,
   onSendPrompt,
   onSteerThread,
@@ -460,45 +466,52 @@ export function Composer({
                 padding: '10px 14px 0',
               }}
             >
-              {chips.map((c) => (
-                <span
-                  key={c.id}
-                  className="codex-pill"
-                  style={{ height: 24, padding: '0 6px 0 8px', maxWidth: 260 }}
-                >
-                  {c.kind === 'comment' ? (
-                    <MessageSquare size={11} style={{ color: 'var(--accent-blue)' }} aria-hidden="true" />
-                  ) : c.kind === 'skill' ? (
-                    <Sparkles size={11} style={{ color: 'var(--accent-brand)' }} aria-hidden="true" />
-                  ) : c.kind === 'image' ? (
-                    <ImageIcon size={11} aria-hidden="true" />
-                  ) : c.kind === 'terminal' ? (
-                    <Terminal size={11} aria-hidden="true" />
-                  ) : (
-                    <FileCode2 size={11} aria-hidden="true" />
-                  )}
-                  <span className="codex-pill-label mono" style={{ fontSize: 11 }}>
-                    {c.label}
-                  </span>
-                  <button
-                    type="button"
-                    className="pressable"
-                    onClick={() =>
-                      onUpdateThread({ draftChips: chips.filter((x) => x.id !== c.id) })
-                    }
-                    aria-label={`Remove attachment ${c.label}`}
-                    style={{
-                      border: 'none',
-                      background: 'transparent',
-                      padding: 2,
-                      display: 'inline-flex',
-                      color: 'var(--text-muted)',
-                    }}
+              {chips.map((c) => {
+                const isImageGen =
+                  c.kind === 'skill' && (c.skillName ?? c.label).replace(/^\/+/, '') === 'image-gen';
+                return (
+                  <span
+                    key={c.id}
+                    className="codex-pill"
+                    data-highlighted={isImageGen ? 'true' : undefined}
+                    style={{ height: 24, padding: '0 6px 0 8px', maxWidth: 260 }}
                   >
-                    <X size={11} aria-hidden="true" />
-                  </button>
-                </span>
-              ))}
+                    {c.kind === 'comment' ? (
+                      <MessageSquare size={11} style={{ color: 'var(--accent-blue)' }} aria-hidden="true" />
+                    ) : isImageGen ? (
+                      <Wand2 size={11} style={{ color: 'var(--accent-brand)' }} aria-hidden="true" />
+                    ) : c.kind === 'skill' ? (
+                      <Sparkles size={11} style={{ color: 'var(--accent-brand)' }} aria-hidden="true" />
+                    ) : c.kind === 'image' ? (
+                      <ImageIcon size={11} aria-hidden="true" />
+                    ) : c.kind === 'terminal' ? (
+                      <Terminal size={11} aria-hidden="true" />
+                    ) : (
+                      <FileCode2 size={11} aria-hidden="true" />
+                    )}
+                    <span className="codex-pill-label mono" style={{ fontSize: 11 }}>
+                      {isImageGen ? 'Create image' : c.label}
+                    </span>
+                    <button
+                      type="button"
+                      className="pressable"
+                      onClick={() =>
+                        onUpdateThread({ draftChips: chips.filter((x) => x.id !== c.id) })
+                      }
+                      aria-label={`Remove attachment ${c.label}`}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        padding: 2,
+                        display: 'inline-flex',
+                        color: 'var(--text-muted)',
+                      }}
+                    >
+                      <X size={11} aria-hidden="true" />
+                    </button>
+                  </span>
+                );
+              })}
             </div>
           )}
 
@@ -509,9 +522,13 @@ export function Composer({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              thread.interactionMode === 'plan'
-                ? 'Describe what to plan... (@ for files, / for commands, Shift+Tab for Build)'
-                : 'Ask SmolCode anything, @ to add files, / for commands'
+              chips.some(
+                (c) => c.kind === 'skill' && (c.skillName ?? c.label).replace(/^\/+/, '') === 'image-gen',
+              )
+                ? 'Describe an image to generate locally...'
+                : thread.interactionMode === 'plan'
+                  ? 'Describe what to plan... (@ for files, / for commands, Shift+Tab for Build)'
+                  : 'Ask SmolCode anything, @ to add files, / for commands'
             }
             aria-label="Prompt composer"
             rows={2}
@@ -543,6 +560,8 @@ export function Composer({
             recording={voice.recording}
             transcribing={voice.transcribing}
             statsOpen={statsOpen}
+            imageGenSize={imageGenSize}
+            onChangeImageGenSize={onChangeImageGenSize}
             onSetStatsOpen={setStatsOpen}
             onToggleFollowUpMode={() =>
               setFollowUpMode((m) => (m === 'queue' ? 'steer' : 'queue'))

@@ -1,10 +1,15 @@
-import { dialog, ipcMain, nativeTheme, Notification, shell, type BrowserWindow, type Rectangle } from 'electron';
+import { clipboard, ClipboardItem, dialog, ipcMain, nativeImage, nativeTheme, Notification, shell, type BrowserWindow, type Rectangle } from 'electron';
 import { exec, spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, extname, relative } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveWindowMaterial } from '../../src/shared/theme-presets';
 import { resolveInsideWorkdir } from '../tools/fs-tools';
+import {
+  detectLocalImageBackends,
+  downloadImageModelPreset,
+  getGeneratedImagesRoot,
+} from '../tools/image-gen';
 import type {
   AppSettings,
   ApprovalDecision,
@@ -12,6 +17,7 @@ import type {
   AutomationRule,
   ComposerChip,
   EffortLevel,
+  ImageModelPresetId,
   InteractionMode,
   McpServerConfig,
   PreferredEditor,
@@ -709,4 +715,118 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle('smolcode:close-terminal', (_e, ptyId: string) => {
     ptyManager.close(ptyId);
   });
+
+  const isPathInsideGeneratedRoot = (targetPath: string): boolean => {
+    const root = resolve(getGeneratedImagesRoot());
+    const abs = resolve(targetPath);
+    const rel = relative(root, abs).replace(/\\/g, '/');
+    return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+  };
+
+  ipcMain.handle(
+    'smolcode:read-generated-image-data-url',
+    (_e, filePath: string) => {
+      if (!filePath || !isPathInsideGeneratedRoot(filePath) || !existsSync(filePath)) {
+        return '';
+      }
+      const ext = extname(filePath).toLowerCase();
+      const mime =
+        ext === '.webp'
+          ? 'image/webp'
+          : ext === '.jpg' || ext === '.jpeg'
+            ? 'image/jpeg'
+            : 'image/png';
+      return `data:${mime};base64,${readFileSync(filePath).toString('base64')}`;
+    },
+  );
+
+  ipcMain.handle(
+    'smolcode:save-generated-image-to-workspace',
+    (
+      _e,
+      input: {
+        projectId: string;
+        sourcePath: string;
+        targetRelPath?: string;
+      },
+    ) => {
+      const project = store.getProject(input.projectId);
+      if (!project) throw new Error(`Project not found: ${input.projectId}`);
+      if (!isPathInsideGeneratedRoot(input.sourcePath) || !existsSync(input.sourcePath)) {
+        throw new Error('Generated image file not found.');
+      }
+      const fallbackRel = `generated/${basename(input.sourcePath)}`;
+      const relInput = (input.targetRelPath ?? fallbackRel).trim() || fallbackRel;
+      const resolved = resolveInsideWorkdir(project.rootPath, relInput);
+      if (!resolved.inside) {
+        throw new Error(`Refusing to save generated image outside workspace: ${relInput}`);
+      }
+      mkdirSync(dirname(resolved.absPath), { recursive: true });
+      copyFileSync(input.sourcePath, resolved.absPath);
+      return { savedRelPath: resolved.relPath, absPath: resolved.absPath };
+    },
+  );
+
+  ipcMain.handle(
+    'smolcode:copy-generated-image-to-clipboard',
+    async (_e, filePath: string) => {
+      if (!filePath || !isPathInsideGeneratedRoot(filePath) || !existsSync(filePath)) {
+        return false;
+      }
+      const img = nativeImage.createFromPath(filePath);
+      if (img.isEmpty()) return false;
+      const pngBytes = img.toPNG();
+      await clipboard.write([
+        new ClipboardItem({
+          'image/png': new Blob([new Uint8Array(pngBytes)], { type: 'image/png' }),
+        }),
+      ]);
+      return true;
+    },
+  );
+
+  ipcMain.handle('smolcode:detect-local-image-backends', () =>
+    detectLocalImageBackends(store.getSettings()),
+  );
+
+  ipcMain.handle(
+    'smolcode:download-local-image-model',
+    async (_e, presetId: ImageModelPresetId) => {
+      const res = await downloadImageModelPreset(presetId, (progress) => {
+        getWindow()?.webContents.send('smolcode:agent-event', {
+          type: 'image_model_download_progress',
+          progress,
+        });
+      });
+      if (res.ok && res.savedPath) {
+        store.updateSettings({ sdCppModelPath: res.savedPath });
+      }
+      return res;
+    },
+  );
+
+  ipcMain.handle(
+    'smolcode:pick-local-image-file',
+    async (_e, kind: 'binary' | 'model' | 'vae') => {
+      const win = getWindow();
+      const filters =
+        kind === 'binary'
+          ? process.platform === 'win32'
+            ? [{ name: 'Executables', extensions: ['exe'] }]
+            : undefined
+          : [{ name: 'Diffusion Models', extensions: ['safetensors', 'gguf', 'ckpt', 'pt', 'bin'] }];
+      const res = await dialog.showOpenDialog(win ?? undefined!, {
+        properties: ['openFile'],
+        title:
+          kind === 'binary'
+            ? 'Select sd-cli Executable'
+            : kind === 'vae'
+              ? 'Select VAE File'
+              : 'Select Diffusion Model (.safetensors / .gguf)',
+        ...(filters ? { filters } : {}),
+      });
+      if (res.canceled || res.filePaths.length === 0) return null;
+      return res.filePaths[0];
+    },
+  );
 }

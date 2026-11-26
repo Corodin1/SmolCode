@@ -24,6 +24,15 @@ const MOCK_SETTINGS = {
   showAdvancedDualModel: false,
   webLookupEnabled: true,
   obscuraPath: '',
+  imageGenProvider: 'auto',
+  sdCppPath: '',
+  sdCppModelPath: '',
+  sdCppVaePath: '',
+  sdCppExtraArgs: '',
+  imageGenLocalUrl: 'http://127.0.0.1:8188',
+  ollamaImageModel: 'x/z-image-turbo',
+  imageGenDefaultSize: '1024x1024',
+  imageGenUnloadOllama: true,
 };
 
 const MOCK_PROJECTS = [
@@ -371,6 +380,22 @@ const mockApi = {
     envVarsJson: '{"NODE_ENV":"development"}',
   }),
   saveProjectEnvironment: async () => {},
+  readGeneratedImageDataUrl: async () => '',
+  saveGeneratedImageToWorkspace: async (input) => ({
+    savedRelPath: input.targetRelPath || 'generated/image.png',
+    absPath: 'C:\\coding Q4 2026\\SmolCode\\generated\\image.png',
+  }),
+  copyGeneratedImageToClipboard: async () => true,
+  detectLocalImageBackends: async () => ({
+    sdCppPath: 'resources/bin/win32-x64/sd-cli.exe',
+    sdCppBundled: true,
+    localModelFiles: [],
+    comfyUiUp: false,
+    a1111Up: false,
+    ollamaImageModels: ['x/flux2-klein'],
+  }),
+  downloadLocalImageModel: async () => ({ ok: true }),
+  pickLocalImageFile: async () => null,
 };
 
 window.addEventListener('error', (e) => {

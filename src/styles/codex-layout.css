@@ -1238,3 +1238,341 @@ select:focus-visible,
 [data-reduce-motion='true'] .ag-question-dot {
   transition: none !important;
 }
+
+/* Tactile Pill Reasoning Effort Slider */
+.codex-effort-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.codex-effort-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.codex-effort-header-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.codex-effort-bolt {
+  color: var(--text-muted);
+  transition: color 180ms var(--ease-out);
+  flex-shrink: 0;
+}
+
+.codex-effort-bolt[data-ultra='true'] {
+  color: var(--effort-xhigh);
+}
+
+.codex-effort-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.codex-effort-tier-readout {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: color 180ms var(--ease-out);
+}
+
+.codex-effort-track {
+  position: relative;
+  height: 36px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--effort-track-bg);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.codex-effort-track:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.codex-effort-track[data-dragging='true'] {
+  cursor: grabbing;
+}
+
+.codex-effort-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.codex-effort-fill[data-tier='low'] {
+  background: transparent;
+}
+
+.codex-effort-fill[data-tier='medium'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--effort-medium) 26%, var(--effort-track-bg)) 0%,
+    color-mix(in srgb, var(--effort-medium) 44%, var(--effort-track-bg)) 100%
+  );
+}
+
+.codex-effort-fill[data-tier='high'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--effort-medium) 48%, var(--effort-track-bg)) 0%,
+    color-mix(in srgb, var(--effort-high) 70%, var(--effort-track-bg)) 100%
+  );
+}
+
+.codex-effort-fill[data-tier='xhigh'] {
+  background: linear-gradient(
+    90deg,
+    var(--effort-ultra-start) 0%,
+    var(--effort-ultra-mid) 52%,
+    var(--effort-ultra-end) 100%
+  );
+}
+
+.codex-effort-ultra-sheen {
+  position: absolute;
+  inset: -40% -30%;
+  background: linear-gradient(
+    105deg,
+    transparent 24%,
+    rgba(255, 255, 255, 0.14) 47%,
+    rgba(221, 214, 254, 0.24) 53%,
+    transparent 74%
+  );
+  pointer-events: none;
+}
+
+.codex-effort-stars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.codex-effort-star {
+  position: absolute;
+  border-radius: 50%;
+  background: #ffffff;
+  opacity: var(--star-opacity, 0.85);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.65);
+}
+
+.codex-effort-dots {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 17px;
+  right: 17px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.codex-effort-dot-stop {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(1);
+  background: rgba(255, 255, 255, 0.24);
+  transition:
+    transform 150ms var(--ease-out),
+    opacity 140ms ease,
+    background-color 150ms ease;
+}
+
+[data-theme='light'] .codex-effort-dot-stop {
+  background: rgba(17, 18, 22, 0.24);
+}
+
+.codex-effort-dot-stop[data-passed='true'] {
+  background: rgba(255, 255, 255, 0.44);
+}
+
+[data-theme='light'] .codex-effort-dot-stop[data-passed='true'] {
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.codex-effort-dot-stop[data-hovered='true'] {
+  transform: translate(-50%, -50%) scale(1.85);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+[data-theme='light'] .codex-effort-dot-stop[data-hovered='true'] {
+  background: rgba(17, 18, 22, 0.42);
+}
+
+.codex-effort-dot-stop[data-covered='true'] {
+  opacity: 0;
+}
+
+.codex-effort-rail {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  right: 32px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.codex-effort-thumb-mover {
+  width: 100%;
+  height: 100%;
+}
+
+.codex-effort-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.34),
+    0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+[data-theme='light'] .codex-effort-thumb {
+  box-shadow:
+    0 1px 4px rgba(17, 18, 22, 0.22),
+    0 0 0 1px rgba(17, 18, 22, 0.08);
+}
+
+.codex-effort-thumb[data-ultra='true'] {
+  box-shadow:
+    0 0 12px rgba(255, 255, 255, 0.45),
+    0 2px 6px rgba(0, 0, 0, 0.28);
+}
+
+.codex-effort-stops {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  height: 100%;
+}
+
+.codex-effort-stop {
+  border: none;
+  background: transparent;
+  padding: 0;
+  height: 100%;
+  cursor: pointer;
+}
+
+.codex-effort-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 18px;
+}
+
+/* ChatGPT-Clean Generated Image Cards */
+.chatgpt-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 380px));
+  gap: 12px;
+  max-width: 100%;
+}
+
+.chatgpt-image-card {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+}
+
+.chatgpt-image-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.chatgpt-image-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition:
+    opacity 150ms var(--ease-out),
+    transform 150ms var(--ease-out);
+  z-index: 2;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chatgpt-image-card:hover .chatgpt-image-actions,
+  .chatgpt-image-card:focus-within .chatgpt-image-actions {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (hover: none) {
+  .chatgpt-image-actions {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chatgpt-image-action-btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(16, 17, 20, 0.72);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  color: #f5f5f7;
+  font-size: 11.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.24);
+}
+
+.chatgpt-image-caption {
+  padding: 9px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* Gemini-inspired Procedural Ocean Dots Image Placeholder */
+.gemini-image-placeholder {
+  background: var(--bg-sidebar);
+}
+
+.gemini-ocean-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

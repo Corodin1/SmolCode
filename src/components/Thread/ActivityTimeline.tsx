@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Sparkles,
   Terminal,
+  Wand2,
   Wrench,
   XCircle,
 } from 'lucide-react';
@@ -159,6 +160,7 @@ function renderSingleAction(tool: ToolCallLog) {
     tool.toolName === 'move_file';
   const isRead = tool.toolName === 'read_range' || tool.toolName === 'read_symbol';
   const isSkill = tool.toolName === 'read_skill' || tool.toolName === 'save_skill';
+  const isImageGen = tool.toolName === 'generate_image';
   const isWeb = tool.toolName === 'web_lookup';
   const isSearch =
     tool.toolName === 'repo_search' ||
@@ -227,7 +229,11 @@ function renderSingleAction(tool: ToolCallLog) {
                 : 'Ran'
               : tool.toolName === 'update_plan_step'
                 ? 'Updated plan'
-                : tool.toolName;
+                : isImageGen
+                  ? isRunning
+                    ? 'Creating image'
+                    : 'Created image'
+                  : tool.toolName;
 
   const targetFile =
     tool.filePath ||
@@ -238,6 +244,7 @@ function renderSingleAction(tool: ToolCallLog) {
     isEdit,
     isRead,
     isSkill,
+    isImageGen,
     isWeb,
     isSearch,
     isCmd,
@@ -432,6 +439,8 @@ export function ActivityTimeline({
                 <XCircle size={13} style={{ color: 'var(--accent-red)', flexShrink: 0 }} aria-hidden="true" />
               ) : meta.isSkill ? (
                 <Sparkles size={13} style={{ color: 'var(--accent-brand)', flexShrink: 0 }} aria-hidden="true" />
+              ) : meta.isImageGen ? (
+                <Wand2 size={13} style={{ color: 'var(--accent-brand)', flexShrink: 0 }} aria-hidden="true" />
               ) : meta.isEdit ? (
                 <FileEdit size={13} style={{ color: 'var(--accent-green)', flexShrink: 0 }} aria-hidden="true" />
               ) : meta.isRead ? (

@@ -321,6 +321,20 @@ export class OllamaClient {
     }
   }
 
+  async unloadModel(modelName: string): Promise<void> {
+    if (!modelName) return;
+    try {
+      await fetch(`${this.getBaseUrl()}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName, keep_alive: 0 }),
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      // Best-effort VRAM unload
+    }
+  }
+
   async chatStream(req: OllamaChatRequest): Promise<OllamaChatResponse> {
     const execute = async (includeThink: boolean): Promise<Response> => {
       const body: Record<string, unknown> = {
