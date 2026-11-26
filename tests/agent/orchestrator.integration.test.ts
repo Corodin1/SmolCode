@@ -1346,4 +1346,112 @@ describe('4-Stage AgentOrchestrator integration (mock Ollama server)', () => {
     orch.dispose();
     store.close();
   });
+
+  it('injects effort system directive into Zone A system prompt and refreshes KV prefix when effort changes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-effort-zonea-'));
+    const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-effort-zonea-blobs-'));
+    writeFileSync(join(dir, 'app.ts'), 'export const val = 1;\n', 'utf8');
+
+    const capturedSystemPrompts: string[] = [];
+    const capturedNumCtx: number[] = [];
+
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/show') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: ['tools'] }));
+        return;
+      }
+      if (req.url === '/api/chat') {
+        let body = '';
+        req.on('data', (c) => (body += String(c)));
+        req.on('end', () => {
+          const reqJson = JSON.parse(body) as {
+            messages: Array<{ role: string; content: string }>;
+            options?: { num_ctx?: number };
+          };
+          const sys = reqJson.messages.find((m) => m.role === 'system')?.content ?? '';
+          if (reqJson.messages.some((m) => m.role === 'user')) {
+            capturedSystemPrompts.push(sys);
+            if (reqJson.options?.num_ctx) capturedNumCtx.push(reqJson.options.num_ctx);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          res.write(
+            `${JSON.stringify({
+              message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                  {
+                    function: {
+                      name: 'finish_turn',
+                      arguments: { summary: 'Done.' },
+                    },
+                  },
+                ],
+              },
+              done: true,
+              prompt_eval_count: 40,
+              eval_count: 10,
+            })}\n`,
+          );
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(blobDir, { recursive: true, force: true }),
+    );
+
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'qwen3.5:9b',
+      defaultFastModel: 'qwen3.5:9b',
+    });
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      new SnapshotManager(store, blobDir),
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+    const proj = store.upsertProject({ name: 'effort-zonea', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'Effort test',
+      interactionMode: 'build',
+      mainModel: 'qwen3.5:9b',
+      fastModel: 'qwen3.5:9b',
+      effort: 'low',
+      approvalPolicy: 'auto',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    await orch.runUserTurn({ threadId: thread.id, content: 'Quick check' });
+    store.updateThread(thread.id, { effort: 'xhigh' });
+    await orch.runUserTurn({ threadId: thread.id, content: 'Deep refactor' });
+
+    const chatSysPrompts = capturedSystemPrompts.filter((s) => s.includes('You are SmolCode'));
+    expect(chatSysPrompts[0]).toContain('Reasoning Mode: LOW');
+    expect(chatSysPrompts[1]).toContain('Reasoning Mode: ULTRA');
+    expect(capturedNumCtx).toContain(8192);
+    expect(capturedNumCtx).toContain(24576);
+
+    orch.dispose();
+    store.close();
+  });
 });

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { TurnRecord, WorkingMemoryLedger } from '../../src/shared/types';
+import type { EffortLevel, TurnRecord, WorkingMemoryLedger } from '../../src/shared/types';
 import type { OllamaChatMessage, OllamaToolDef } from '../ollama/client';
+import { formatEffortSystemDirective } from '../ollama/effort-profiles';
 import { digestCommandOutput } from './error-digest';
 
 export interface StepHistoryItem {
@@ -55,10 +56,16 @@ export function buildImmutableZoneAPrefix(params: {
   repoSkeleton: string;
   toolDefs: OllamaToolDef[];
   interactionMode?: 'build' | 'plan';
+  effort?: EffortLevel;
   nonToolFallbackGuide?: string;
   skillCatalog?: string;
 }): { systemPrompt: string; prefixHash: string; prefixTokens: number } {
-  const isPlan = params.interactionMode === 'plan';
+  const interactionMode = params.interactionMode ?? 'build';
+  const isPlan = interactionMode === 'plan';
+  const effortDirective = formatEffortSystemDirective(
+    params.effort ?? 'medium',
+    interactionMode,
+  );
   const osShellRule =
     process.platform === 'win32'
       ? `- Host OS: Windows (run_command uses cmd.exe, NOT bash — never run sleep, cat, head, tail, grep, ls, or rm; use read_range/repo_search/delete_file tools, or Windows/Python commands like timeout /t, type, findstr, dir, python).`
@@ -77,6 +84,7 @@ export function buildImmutableZoneAPrefix(params: {
       ? `- When following an approved plan, update steps via update_plan_step.`
       : '',
     `- Verify changes when appropriate, then call finish_turn.`,
+    `\n## Reasoning & Engineering Mode\n${effortDirective}`,
   ].filter(Boolean);
 
   if (params.agentsPrompt.trim()) {
@@ -192,12 +200,15 @@ export function packThreeZoneContext(params: {
   userPrompt: string;
   prefetchedContext: string;
   images?: string[];
-  effortGuidance: string;
+  effortGuidance?: string;
   ledger: WorkingMemoryLedger;
   steps: StepHistoryItem[];
   numCtx: number;
   steeringNotes?: string[];
 }): PackedContextResult {
+  const effortBlock = params.effortGuidance?.trim()
+    ? `\n## Effort Policy\n${params.effortGuidance.trim()}`
+    : '';
   const baseMessages: OllamaChatMessage[] = [
     // ZONE A: Immutable KV-cache-locked system prefix
     {
@@ -212,7 +223,7 @@ export function packThreeZoneContext(params: {
         params.prefetchedContext
           ? `\n## Prefetched Context Slices\n${params.prefetchedContext}`
           : '',
-        `\n## Effort Policy\n${params.effortGuidance}`,
+        effortBlock,
       ]
         .filter(Boolean)
         .join('\n'),

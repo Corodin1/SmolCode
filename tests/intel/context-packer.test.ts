@@ -168,5 +168,43 @@ describe('KV-cache context packer & error digest', () => {
     if (process.platform === 'win32') {
       expect(zoneA.systemPrompt).toContain('cmd.exe');
     }
+
+    const lowZoneA = buildImmutableZoneAPrefix({
+      agentsPrompt: '',
+      repoSkeleton: '',
+      toolDefs: AGENT_TOOLS,
+      interactionMode: 'build',
+      effort: 'low',
+    });
+    const ultraZoneA = buildImmutableZoneAPrefix({
+      agentsPrompt: '',
+      repoSkeleton: '',
+      toolDefs: AGENT_TOOLS,
+      interactionMode: 'build',
+      effort: 'xhigh',
+    });
+    expect(lowZoneA.systemPrompt).toContain('## Reasoning & Engineering Mode');
+    expect(lowZoneA.systemPrompt).toContain('simple, short, direct code');
+    expect(ultraZoneA.systemPrompt).toContain('Reasoning Mode: ULTRA');
+    expect(lowZoneA.prefixHash).not.toBe(ultraZoneA.prefixHash);
+
+    const packedWithoutEffort = packThreeZoneContext({
+      immutableSystemPrompt: ultraZoneA.systemPrompt,
+      prefixHash: ultraZoneA.prefixHash,
+      prefixTokens: ultraZoneA.prefixTokens,
+      userPrompt: 'Build feature',
+      prefetchedContext: '',
+      ledger: {
+        goal: 'Build feature',
+        inspectedSymbols: [],
+        modifiedFiles: [],
+        activeErrors: [],
+        verifiedChecks: [],
+      },
+      steps: [],
+      numCtx: 24576,
+    });
+    expect(packedWithoutEffort.messages[0].content).toContain('Reasoning Mode: ULTRA');
+    expect(packedWithoutEffort.messages[1].content).not.toContain('## Effort Policy');
   });
 });

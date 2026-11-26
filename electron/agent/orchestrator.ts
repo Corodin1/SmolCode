@@ -91,6 +91,7 @@ interface ZoneACache {
   prefixHash: string;
   prefixTokens: number;
   interactionMode: ThreadRecord['interactionMode'];
+  effort: ThreadRecord['effort'];
   mainModel: string;
   agentsHash: string;
   toolsHash: string;
@@ -897,6 +898,7 @@ export class AgentOrchestrator {
       if (
         !zoneA ||
         zoneA.interactionMode !== thread.interactionMode ||
+        zoneA.effort !== thread.effort ||
         zoneA.mainModel !== resolvedMainModel ||
         zoneA.agentsHash !== agentsHash ||
         zoneA.toolsHash !== toolsHash ||
@@ -917,12 +919,14 @@ export class AgentOrchestrator {
           repoSkeleton: skeleton.skeleton,
           toolDefs: threadTools,
           interactionMode: thread.interactionMode,
+          effort: thread.effort,
           nonToolFallbackGuide,
           skillCatalog,
         });
         zoneA = {
           ...built,
           interactionMode: thread.interactionMode,
+          effort: thread.effort,
           mainModel: resolvedMainModel,
           agentsHash,
           toolsHash,
@@ -1324,10 +1328,10 @@ export class AgentOrchestrator {
       let anyColdReload = false;
       let stepCount = 0;
 
-      const MAX_TURN_STEPS = 24;
+      const maxTurnSteps = profile.maxMainSteps;
       const tThink = Date.now();
 
-      while (!ac.signal.aborted && stepCount < MAX_TURN_STEPS) {
+      while (!ac.signal.aborted && stepCount < maxTurnSteps) {
         stepCount += 1;
 
         // Drain mid-turn steering notes at the message tail so prefix KV cache stays intact
@@ -1341,7 +1345,6 @@ export class AgentOrchestrator {
           userPrompt: formattedUserPrompt,
           prefetchedContext: prefetchedSlices.join('\n\n'),
           images: mainModelInfo?.capabilities.vision ? images : undefined,
-          effortGuidance: profile.guidanceHint,
           ledger,
           steps,
           numCtx: mainOpts.options.num_ctx,
@@ -2014,8 +2017,8 @@ export class AgentOrchestrator {
       if (!finalAnswer) {
         finalAnswer = ac.signal.aborted
           ? 'Turn stopped by user.'
-          : stepCount >= MAX_TURN_STEPS
-            ? `Reached maximum turn step limit (${MAX_TURN_STEPS}). Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`
+          : stepCount >= maxTurnSteps
+            ? `Reached maximum turn step limit (${maxTurnSteps}). Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`
             : `Completed ${stepCount} steps. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
       }
 

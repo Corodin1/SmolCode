@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { LoopGuard } from '../../electron/agent/loop-guard';
 import { OllamaClient } from '../../electron/ollama/client';
-import { getEffortProfile } from '../../electron/ollama/effort-profiles';
+import {
+  formatEffortSystemDirective,
+  getEffortProfile,
+} from '../../electron/ollama/effort-profiles';
 import { VramScheduler } from '../../electron/ollama/vram-scheduler';
 import { DEFAULT_APP_SETTINGS } from '../../electron/store/database';
 
@@ -60,24 +63,40 @@ describe('VRAM Scheduler & Effort Profiles', () => {
     const high = getEffortProfile('high');
     const xhigh = getEffortProfile('xhigh');
 
-    // Effort changes pre-action thinking only (think toggle, token budget, guidance)
+    // Effort scales thinking, context/output budgets, step cap, scout, and verify depth
     expect(low.mainThink).toBe(false);
     expect(med.mainThink).toBe(true);
     expect(high.mainThink).toBe(true);
     expect(xhigh.mainThink).toBe(true);
+
+    expect(low.numCtx).toBe(8192);
+    expect(med.numCtx).toBe(12288);
+    expect(high.numCtx).toBe(16384);
+    expect(xhigh.numCtx).toBe(24576);
+
     expect(low.numPredict).toBeLessThan(med.numPredict);
     expect(med.numPredict).toBeLessThan(high.numPredict);
     expect(high.numPredict).toBeLessThan(xhigh.numPredict);
 
-    // Non-thinking execution & verification settings remain uniform across effort levels
-    // (no per-effort step limits)
-    for (const p of [low, med, high, xhigh]) {
-      expect(p.numCtx).toBe(12288);
-      expect('maxMainSteps' in p).toBe(false);
-      expect(p.runFastScout).toBe(true);
-      expect(p.verifyDepth).toBe('typecheck+tests');
-      expect(p.temperature).toBe(0.2);
-    }
+    expect(low.maxMainSteps).toBe(10);
+    expect(med.maxMainSteps).toBe(18);
+    expect(high.maxMainSteps).toBe(24);
+    expect(xhigh.maxMainSteps).toBe(32);
+
+    expect(low.runFastScout).toBe(false);
+    expect(med.runFastScout).toBe(true);
+    expect(high.runFastScout).toBe(true);
+    expect(xhigh.runFastScout).toBe(true);
+
+    expect(low.verifyDepth).toBe('syntax');
+    expect(med.verifyDepth).toBe('typecheck+tests');
+    expect(high.verifyDepth).toBe('typecheck+tests');
+    expect(xhigh.verifyDepth).toBe('full-audit');
+
+    expect(formatEffortSystemDirective('low', 'build')).toContain('simple, short, direct code');
+    expect(formatEffortSystemDirective('xhigh', 'build')).toContain('ULTRA');
+    expect(formatEffortSystemDirective('low', 'plan')).toContain('3-5 concise steps');
+    expect(formatEffortSystemDirective('xhigh', 'plan')).toContain('Architecture-Grade Plan');
 
     // Small <=4B models auto-disable thinking at medium effort to avoid <think> exhaustion
     const tinyOpts = scheduler.resolveRoleOptions({

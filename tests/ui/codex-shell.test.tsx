@@ -916,6 +916,6 @@ describe('SmolCode UI components', () => {
     );
     expect(container.querySelector('.codex-effort-stars')).toBeInTheDocument();
     expect(container.querySelectorAll('.codex-effort-star').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Ultra · 6\.1k tok/i)).toBeInTheDocument();
+    expect(screen.getByText(/24k ctx · 8k out/i)).toBeInTheDocument();
   });
 });
