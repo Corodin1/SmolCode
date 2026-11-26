@@ -1481,7 +1481,7 @@ select:focus-visible,
   min-height: 18px;
 }
 
-/* ChatGPT-Clean Generated Image Cards */
+/* SmolCode-Cohesive Image Preview Cards & Ocean Loading Canvas */
 .chatgpt-image-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 380px));
@@ -1491,11 +1491,21 @@ select:focus-visible,
 
 .chatgpt-image-card {
   position: relative;
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+  border: 1px solid color-mix(in srgb, var(--border-default) 72%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow:
+    0 4px 18px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-sheen) 75%, transparent);
+}
+
+[data-theme='light'] .chatgpt-image-card {
+  box-shadow:
+    0 4px 16px rgba(17, 18, 22, 0.06),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-sheen) 75%, transparent);
 }
 
 .chatgpt-image-trigger {
@@ -1505,6 +1515,11 @@ select:focus-visible,
   border: none;
   background: transparent;
   cursor: zoom-in;
+}
+
+.chatgpt-image-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .chatgpt-image-actions {
@@ -1517,8 +1532,8 @@ select:focus-visible,
   opacity: 0;
   transform: translateY(-2px);
   transition:
-    opacity 150ms var(--ease-out),
-    transform 150ms var(--ease-out);
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
   z-index: 2;
 }
 
@@ -1538,41 +1553,97 @@ select:focus-visible,
 }
 
 .chatgpt-image-action-btn {
-  height: 30px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(16, 17, 20, 0.72);
-  backdrop-filter: blur(12px) saturate(160%);
-  -webkit-backdrop-filter: blur(12px) saturate(160%);
-  color: #f5f5f7;
+  border: 1px solid var(--glass-border-specular);
+  background: var(--bg-pill-glass);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
   font-size: 11.5px;
   font-weight: 500;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chatgpt-image-action-btn:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-surface-hover);
+  }
+}
+
+.chatgpt-image-action-btn[data-active='true'] {
+  border-color: color-mix(in srgb, var(--accent-green) 48%, var(--border-default));
+  color: var(--accent-green);
 }
 
 .chatgpt-image-caption {
   padding: 9px 12px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 75%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 68%, transparent);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--text-muted);
+  gap: 10px;
 }
 
-/* Gemini-inspired Procedural Ocean Dots Image Placeholder */
+.chatgpt-image-caption-prompt {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.chatgpt-image-caption-meta {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Procedural Ocean Dots Image Placeholder & Loading Backdrop */
 .gemini-image-placeholder {
-  background: var(--bg-sidebar);
+  border-color: color-mix(in srgb, var(--border-subtle) 65%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 38%, transparent);
+  box-shadow:
+    0 2px 14px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-sheen) 55%, transparent);
+}
+
+[data-theme='light'] .gemini-image-placeholder {
+  background: color-mix(in srgb, var(--bg-elevated) 44%, transparent);
+  box-shadow:
+    0 2px 14px rgba(17, 18, 22, 0.045),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-sheen) 60%, transparent);
+}
+
+.gemini-ocean-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-elevated) 38%, transparent);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .gemini-ocean-canvas {
   display: block;
   width: 100%;
   height: 100%;
+  -webkit-mask-image: radial-gradient(
+    ellipse 86% 86% at 50% 50%,
+    #000000 56%,
+    rgba(0, 0, 0, 0.45) 82%,
+    rgba(0, 0, 0, 0.06) 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 86% 86% at 50% 50%,
+    #000000 56%,
+    rgba(0, 0, 0, 0.45) 82%,
+    rgba(0, 0, 0, 0.06) 100%
+  );
 }

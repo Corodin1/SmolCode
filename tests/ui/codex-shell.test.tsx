@@ -811,7 +811,7 @@ describe('SmolCode UI components', () => {
                 id: 'img-tool-1',
                 toolName: 'generate_image',
                 summary: 'Minimalist glass prism',
-                argsPreview: '{"prompt":"Minimalist glass prism"}',
+                argsPreview: '{"prompt":"Minimalist glass prism","size":"1024x576"}',
                 status: 'running',
               },
             ],
@@ -869,12 +869,13 @@ describe('SmolCode UI components', () => {
     fireEvent.click(screen.getByText(/Landscape \(1024×576\)/i));
     expect(onChangeSize).toHaveBeenCalledWith('1024x576');
 
-    // Generating placeholder procedural ocean canvas (no text, no icons) + completed image card + lightbox
+    // Generating placeholder procedural ocean canvas (no text, no icons) + aspect ratio + completed image card + lightbox
     const generatingStatus = screen.getByRole('status', { name: 'Generating image' });
     expect(generatingStatus).toBeInTheDocument();
     expect(generatingStatus.textContent).toBe('');
     expect(generatingStatus.querySelector('svg')).toBeNull();
     expect(generatingStatus.querySelector('canvas.gemini-ocean-canvas')).toBeInTheDocument();
+    expect(generatingStatus).toHaveStyle({ aspectRatio: '1024 / 576' });
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save image to workspace' }));

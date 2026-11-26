@@ -19,6 +19,7 @@ import { CodeBlock } from './CodeBlock';
 import {
   GeneratedImageCard,
   GeneratingImagePlaceholder,
+  parseImageAspectRatio,
 } from './GeneratedImageCard';
 import { PlanCard } from './PlanCard';
 import { QuestionCard } from './QuestionCard';
@@ -403,7 +404,11 @@ export function TurnItem({
       )}
 
       {runningImageTool && (
-        <GeneratingImagePlaceholder prompt={runningImageTool.summary} />
+        <GeneratingImagePlaceholder
+          prompt={runningImageTool.summary}
+          aspectRatio={parseImageAspectRatio(runningImageTool.argsPreview)}
+          onLayoutChange={onLayoutChange}
+        />
       )}
 
       {turn.generatedImages && turn.generatedImages.length > 0 && (

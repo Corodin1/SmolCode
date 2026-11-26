@@ -39,7 +39,7 @@ export function ImageLightboxModal({
     >
       <FrostedSurface
         variant="modal"
-        cornerRadius={16}
+        cornerRadius={14}
         className="codex-modal-card"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -141,9 +141,10 @@ export function ImageLightboxModal({
             style={{
               maxWidth: '100%',
               maxHeight: '68vh',
-              borderRadius: 12,
+              borderRadius: 10,
+              border: '1px solid var(--border-subtle)',
               objectFit: 'contain',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.28)',
             }}
           />
         </div>

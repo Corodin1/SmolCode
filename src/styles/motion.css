@@ -411,25 +411,29 @@
   will-change: transform, opacity;
 }
 
-/* ChatGPT-clean Image Card Shimmer & Blur-to-Sharp Reveal */
-@keyframes chatgpt-img-shimmer {
-  0% {
-    background-position: 140% 50%;
-  }
-  100% {
-    background-position: -140% 50%;
+/* Image Card Entrance, Ocean Backdrop Handoff & Blur-to-Sharp Reveal */
+.chatgpt-image-card {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 210ms var(--ease-out);
+}
+
+@starting-style {
+  .chatgpt-image-card {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
   }
 }
 
-.chatgpt-image-skeleton-wash {
-  background: linear-gradient(
-    115deg,
-    color-mix(in srgb, var(--bg-surface) 92%, transparent) 18%,
-    color-mix(in srgb, var(--accent-brand) 14%, var(--bg-surface-hover)) 44%,
-    color-mix(in srgb, var(--bg-surface) 92%, transparent) 72%
-  );
-  background-size: 240% 100%;
-  animation: chatgpt-img-shimmer 2.1s linear infinite;
+.gemini-ocean-backdrop {
+  opacity: 1;
+  transition: opacity 240ms var(--ease-out);
+}
+
+.gemini-ocean-backdrop[data-visible='false'] {
+  opacity: 0;
 }
 
 .chatgpt-image-reveal {
@@ -457,8 +461,12 @@
   .codex-effort-star {
     animation: none;
   }
-  .chatgpt-image-skeleton-wash {
-    animation: none;
+  .chatgpt-image-card {
+    transform: none !important;
+    transition: opacity 150ms ease;
+  }
+  .gemini-ocean-backdrop {
+    transition: opacity 150ms ease;
   }
   .chatgpt-image-reveal {
     filter: none !important;
@@ -477,8 +485,13 @@
   animation: none;
 }
 
-[data-reduce-motion='true'] .chatgpt-image-skeleton-wash {
-  animation: none;
+[data-reduce-motion='true'] .chatgpt-image-card {
+  transform: none !important;
+  transition: opacity 120ms ease;
+}
+
+[data-reduce-motion='true'] .gemini-ocean-backdrop {
+  transition: opacity 120ms ease;
 }
 
 [data-reduce-motion='true'] .chatgpt-image-reveal {
