@@ -43,6 +43,35 @@ export type PreferredEditor =
   | 'explorer'
   | 'terminal';
 
+export type ImageGenProvider = 'auto' | 'sd-cpp' | 'comfyui' | 'a1111' | 'ollama';
+
+export type ImageGenSize = '512x512' | '768x768' | '1024x1024' | '1024x576' | '576x1024';
+
+export interface GeneratedImageRecord {
+  id: string;
+  threadId: string;
+  turnId: string;
+  prompt: string;
+  negativePrompt?: string;
+  filePath: string;
+  dataUrl?: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  model: string;
+  backend: Exclude<ImageGenProvider, 'auto'>;
+  durationMs: number;
+  createdAt: number;
+}
+
+export interface LocalImageBackendStatus {
+  sdCppPath: string | null;
+  comfyUiUp: boolean;
+  a1111Up: boolean;
+  ollamaImageModels: string[];
+}
+
 export type ThreadStatus =
   | 'idle'
   | 'queued'
@@ -262,6 +291,7 @@ export interface TurnRecord {
   questionPrompt?: UserQuestionPrompt;
   ledger?: WorkingMemoryLedger;
   telemetry?: TelemetrySnapshot;
+  generatedImages?: GeneratedImageRecord[];
   snapshotId?: string | null;
   createdAt: number;
 }
@@ -351,6 +381,15 @@ export interface AppSettings {
   showAdvancedDualModel: boolean;
   webLookupEnabled: boolean;
   obscuraPath: string;
+  imageGenProvider: ImageGenProvider;
+  sdCppPath: string;
+  sdCppModelPath: string;
+  sdCppVaePath: string;
+  sdCppExtraArgs: string;
+  imageGenLocalUrl: string;
+  ollamaImageModel: string;
+  imageGenDefaultSize: ImageGenSize;
+  imageGenUnloadOllama: boolean;
 }
 
 export interface SearchSuggestion {
@@ -381,6 +420,7 @@ export type AgentStreamEvent =
   | { type: 'approval_requested'; request: ApprovalRequest }
   | { type: 'turn_completed'; threadId: string; turn: TurnRecord; threadTitle?: string }
   | { type: 'turn_error'; threadId: string; turnId: string; message: string }
+  | { type: 'image_generated'; threadId: string; turnId: string; image: GeneratedImageRecord }
   | { type: 'queue_updated'; activeThreadId: string | null; queuedThreadIds: string[] };
 
 export interface SmolCodeApi {
@@ -524,6 +564,16 @@ export interface SmolCodeApi {
   writeTerminal(ptyId: string, data: string): Promise<void>;
   resizeTerminal(ptyId: string, cols: number, rows: number): Promise<void>;
   closeTerminal(ptyId: string): Promise<void>;
+
+  // Image Generation
+  readGeneratedImageDataUrl(filePath: string): Promise<string>;
+  saveGeneratedImageToWorkspace(input: {
+    projectId: string;
+    sourcePath: string;
+    targetRelPath?: string;
+  }): Promise<{ savedRelPath: string; absPath: string }>;
+  copyGeneratedImageToClipboard(filePath: string): Promise<boolean>;
+  detectLocalImageBackends(): Promise<LocalImageBackendStatus>;
 
   // Subscriptions
   onAgentEvent(cb: (event: AgentStreamEvent) => void): () => void;

@@ -7,6 +7,7 @@ import type {
   AppSettings,
   AutomationRule,
   ComposerChip,
+  GeneratedImageRecord,
   McpServerConfig,
   McpToolSummary,
   ProjectEnvironment,
@@ -44,6 +45,15 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   showAdvancedDualModel: false,
   webLookupEnabled: true,
   obscuraPath: '',
+  imageGenProvider: 'auto',
+  sdCppPath: '',
+  sdCppModelPath: '',
+  sdCppVaePath: '',
+  sdCppExtraArgs: '',
+  imageGenLocalUrl: 'http://127.0.0.1:8188',
+  ollamaImageModel: 'x/z-image-turbo',
+  imageGenDefaultSize: '1024x1024',
+  imageGenUnloadOllama: true,
 };
 
 export interface AstCacheRow {
@@ -378,6 +388,10 @@ export class SmolCodeStore {
       ),
       ledger: safeJsonParse(row.ledger_json as string | undefined, undefined),
       telemetry: safeJsonParse(row.telemetry_json as string | undefined, undefined),
+      generatedImages: safeJsonParse<GeneratedImageRecord[] | undefined>(
+        row.generated_images_json as string | undefined,
+        undefined,
+      ),
       snapshotId: (row.snapshot_id as string | null) ?? null,
       createdAt: Number(row.created_at),
     };
@@ -395,8 +409,8 @@ export class SmolCodeStore {
       .prepare(
         `INSERT INTO turns (
           id, thread_id, role, content, chips_json, thinking,
-          tool_calls_json, plan_json, question_json, ledger_json, telemetry_json, snapshot_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          tool_calls_json, plan_json, question_json, ledger_json, telemetry_json, generated_images_json, snapshot_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         turn.id,
@@ -410,6 +424,7 @@ export class SmolCodeStore {
         turn.questionPrompt ? JSON.stringify(turn.questionPrompt) : null,
         turn.ledger ? JSON.stringify(turn.ledger) : null,
         turn.telemetry ? JSON.stringify(turn.telemetry) : null,
+        turn.generatedImages ? JSON.stringify(turn.generatedImages) : null,
         turn.snapshotId ?? null,
         turn.createdAt,
       );
@@ -431,7 +446,7 @@ export class SmolCodeStore {
         `UPDATE turns SET
           content = ?, thinking = ?, tool_calls_json = ?,
           plan_json = ?, question_json = ?,
-          ledger_json = ?, telemetry_json = ?, snapshot_id = ?
+          ledger_json = ?, telemetry_json = ?, generated_images_json = ?, snapshot_id = ?
          WHERE id = ?`,
       )
       .run(
@@ -442,6 +457,7 @@ export class SmolCodeStore {
         next.questionPrompt ? JSON.stringify(next.questionPrompt) : null,
         next.ledger ? JSON.stringify(next.ledger) : null,
         next.telemetry ? JSON.stringify(next.telemetry) : null,
+        next.generatedImages ? JSON.stringify(next.generatedImages) : null,
         next.snapshotId ?? null,
         turnId,
       );

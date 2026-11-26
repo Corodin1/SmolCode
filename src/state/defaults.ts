@@ -24,4 +24,13 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   showAdvancedDualModel: false,
   webLookupEnabled: true,
   obscuraPath: '',
+  imageGenProvider: 'auto',
+  sdCppPath: '',
+  sdCppModelPath: '',
+  sdCppVaePath: '',
+  sdCppExtraArgs: '',
+  imageGenLocalUrl: 'http://127.0.0.1:8188',
+  ollamaImageModel: 'x/z-image-turbo',
+  imageGenDefaultSize: '1024x1024',
+  imageGenUnloadOllama: true,
 };

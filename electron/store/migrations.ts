@@ -140,6 +140,12 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE ast_cache ADD COLUMN line_count INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE turns ADD COLUMN generated_images_json TEXT;
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseSync): void {

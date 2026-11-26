@@ -89,6 +89,15 @@ const api: SmolCodeApi = {
     ipcRenderer.invoke('smolcode:resize-terminal', ptyId, cols, rows),
   closeTerminal: (ptyId) => ipcRenderer.invoke('smolcode:close-terminal', ptyId),
 
+  readGeneratedImageDataUrl: (filePath) =>
+    ipcRenderer.invoke('smolcode:read-generated-image-data-url', filePath),
+  saveGeneratedImageToWorkspace: (input) =>
+    ipcRenderer.invoke('smolcode:save-generated-image-to-workspace', input),
+  copyGeneratedImageToClipboard: (filePath) =>
+    ipcRenderer.invoke('smolcode:copy-generated-image-to-clipboard', filePath),
+  detectLocalImageBackends: () =>
+    ipcRenderer.invoke('smolcode:detect-local-image-backends'),
+
   onAgentEvent: (cb) => {
     const handler = (_ev: unknown, payload: AgentStreamEvent) => cb(payload);
     ipcRenderer.on('smolcode:agent-event', handler);

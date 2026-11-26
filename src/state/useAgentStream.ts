@@ -136,6 +136,20 @@ export function useAgentStream(params: {
         return;
       }
 
+      if (ev.type === 'image_generated') {
+        if (ev.threadId === params.activeThreadId) {
+          setTurns((prev) =>
+            prev.map((t) => {
+              if (t.id !== ev.turnId) return t;
+              const existing = t.generatedImages ?? [];
+              if (existing.some((img) => img.id === ev.image.id)) return t;
+              return { ...t, generatedImages: [...existing, ev.image] };
+            }),
+          );
+        }
+        return;
+      }
+
       if (ev.type === 'turn_completed') {
         params.onThreadStatusChange(ev.threadId, {
           status: 'idle',
