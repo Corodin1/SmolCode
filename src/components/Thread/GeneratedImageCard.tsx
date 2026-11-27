@@ -359,9 +359,16 @@ export function GeneratingImagePlaceholder({
   aspectRatio = '1 / 1',
   onLayoutChange,
 }: GeneratingImagePlaceholderProps) {
+  const onLayoutChangeRef = useRef(onLayoutChange);
+
   useEffect(() => {
-    onLayoutChange?.();
-  }, [aspectRatio, onLayoutChange]);
+    onLayoutChangeRef.current = onLayoutChange;
+  }, [onLayoutChange]);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => onLayoutChangeRef.current?.());
+    return () => cancelAnimationFrame(raf);
+  }, [aspectRatio]);
 
   return (
     <div className="chatgpt-image-grid">
@@ -521,10 +528,11 @@ export function GeneratedImageCard({
             }}
             style={{
               display: 'block',
+              position: 'absolute',
+              inset: 0,
               width: '100%',
               height: '100%',
               objectFit: 'cover',
-              position: 'relative',
               zIndex: 1,
             }}
           />

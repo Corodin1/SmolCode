@@ -326,6 +326,22 @@ describe('Workspace FS tools, hashline anchors, and streaming shell', () => {
     const nanSlice = runReadRange(dir, 'app.py', Number.NaN, Number.NaN);
     expect(nanSlice.output).toContain('1:');
     expect(nanSlice.output).toContain('a = 1');
+    expect(nanSlice.startLine).toBe(1);
+    expect(nanSlice.endLine).toBe(4);
+
+    // Small files (<= 180 lines) auto-expand to the full file on any sub-range request
+    writeFileSync(
+      join(dir, 'cube_demo.py'),
+      Array.from({ length: 108 }, (_, i) => `line_${i + 1} = ${i + 1}`).join('\n'),
+      'utf8',
+    );
+    const expanded = runReadRange(dir, 'cube_demo.py', 95, 103);
+    expect(expanded.startLine).toBe(1);
+    expect(expanded.endLine).toBe(108);
+    expect(expanded.totalLines).toBe(108);
+    expect(expanded.output).toContain('full file L1-108/108');
+    expect(expanded.output).toContain('line_1 = 1');
+    expect(expanded.output).toContain('line_108 = 108');
 
     if (process.platform === 'win32') {
       const cmdRes = await executeSandboxedCommand({

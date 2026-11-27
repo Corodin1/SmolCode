@@ -326,29 +326,66 @@ export function runReadSymbol(
   };
 }
 
+export const READ_RANGE_MAX_LINES = 180;
+
 export function runReadRange(
   workdir: string,
   filePath: string,
   startLine: number,
   endLine: number,
-): { output: string; tokensSavedApprox: number } {
+): {
+  output: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  tokensSavedApprox: number;
+} {
   const { absPath, relPath, inside } = resolveInsideWorkdir(workdir, filePath);
   if (!inside || !existsSync(absPath)) {
     throw new Error(`File not found inside workspace: ${filePath}`);
   }
   const text = readFileSync(absPath, 'utf8');
   const lines = text.split(/\r?\n/);
-  const clampedStart = Number.isFinite(startLine) ? Math.max(1, Math.floor(startLine)) : 1;
-  const requestedEnd = Number.isFinite(endLine) ? Math.floor(endLine) : clampedStart + 60;
+  const totalLines = lines.length;
+
+  // Auto-expand small files (<= 180 lines) to the full file so models don't nibble tiny sub-ranges
+  if (totalLines <= READ_RANGE_MAX_LINES) {
+    const slice = formatHashlineSlice(text, 1, totalLines);
+    return {
+      output: `File: ${relPath} (full file L1-${totalLines}/${totalLines})\n${slice}`,
+      startLine: 1,
+      endLine: totalLines,
+      totalLines,
+      tokensSavedApprox: 0,
+    };
+  }
+
+  const requestedStart = Number.isFinite(startLine) ? Math.max(1, Math.floor(startLine)) : 1;
+  if (requestedStart > totalLines) {
+    const tailStart = Math.max(1, totalLines - 20);
+    const slice = formatHashlineSlice(text, tailStart, totalLines);
+    return {
+      output: `Requested startLine ${requestedStart} exceeds ${relPath} length (${totalLines} lines). Showing tail L${tailStart}-${totalLines}/${totalLines}:\n${slice}`,
+      startLine: tailStart,
+      endLine: totalLines,
+      totalLines,
+      tokensSavedApprox: Math.round(Math.max(0, text.length - slice.length) / 4),
+    };
+  }
+
+  const requestedEnd = Number.isFinite(endLine) ? Math.floor(endLine) : requestedStart + 60;
   const clampedEnd = Math.min(
-    lines.length,
-    Math.max(clampedStart, Math.min(requestedEnd, clampedStart + 179)),
+    totalLines,
+    Math.max(requestedStart, Math.min(requestedEnd, requestedStart + READ_RANGE_MAX_LINES - 1)),
   );
-  const slice = formatHashlineSlice(text, clampedStart, clampedEnd);
+  const slice = formatHashlineSlice(text, requestedStart, clampedEnd);
   const savedChars = Math.max(0, text.length - slice.length);
 
   return {
-    output: `File: ${relPath} (L${clampedStart}-${clampedEnd}/${lines.length})\n${slice}`,
+    output: `File: ${relPath} (L${requestedStart}-${clampedEnd}/${totalLines})\n${slice}`,
+    startLine: requestedStart,
+    endLine: clampedEnd,
+    totalLines,
     tokensSavedApprox: Math.round(savedChars / 4),
   };
 }

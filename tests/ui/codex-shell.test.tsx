@@ -16,8 +16,9 @@ import { ThreadView } from '../../src/components/Thread/ThreadView';
 import { TurnItem } from '../../src/components/Thread/TurnItem';
 import { SettingsView } from '../../src/components/Views/SettingsView';
 import { SkillsView } from '../../src/components/Views/SkillsView';
+import { Titlebar } from '../../src/components/Titlebar';
 import { DEFAULT_APP_SETTINGS } from '../../src/state/defaults';
-import type { OllamaModelInfo, ThreadRecord } from '../../src/shared/types';
+import type { OllamaModelInfo, ThreadRecord, TurnRecord } from '../../src/shared/types';
 
 afterEach(() => {
   cleanup();
@@ -425,7 +426,8 @@ describe('SmolCode UI components', () => {
     expect(screen.getByText('1/2 steps')).toBeInTheDocument();
     expect(screen.getByText('Patch code').closest('li')).toHaveAttribute('data-status', 'in_progress');
 
-    // Obscura toggle in SettingsView
+    // Obscura toggle in SettingsView (binary path input removed since Obscura is bundled)
+    expect(screen.queryByLabelText(/Obscura Binary Path/i)).not.toBeInTheDocument();
     const toggle = screen.getByLabelText(/Internet Lookup via Obscura/i);
     await act(async () => {
       fireEvent.click(toggle);
@@ -916,6 +918,307 @@ describe('SmolCode UI components', () => {
     );
     expect(container.querySelector('.codex-effort-stars')).toBeInTheDocument();
     expect(container.querySelectorAll('.codex-effort-star').length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('.codex-effort-nebula').length).toBe(2);
+    expect(container.querySelectorAll('.codex-effort-glint').length).toBe(3);
     expect(screen.getByText(/24k ctx · 8k out/i)).toBeInTheDocument();
+
+    // Switching from non-Ultra to Ultra triggers shockwave + sparks burst
+    rerender(<EffortSlider variant="popover" value="medium" onChange={onChange} />);
+    expect(container.querySelector('.codex-effort-ultra-burst')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ultra' }));
+    expect(onChange).toHaveBeenCalledWith('xhigh');
+    rerender(<EffortSlider variant="popover" value="xhigh" onChange={onChange} />);
+    expect(container.querySelector('.codex-effort-ultra-burst')).toBeInTheDocument();
+    expect(container.querySelector('.codex-effort-shockwave')).toBeInTheDocument();
+    expect(container.querySelectorAll('.codex-effort-spark').length).toBe(10);
+  });
+
+  it('defaults frosted glass to subtle and shows the fast helper pill in ComposerBar', () => {
+    expect(DEFAULT_APP_SETTINGS.glassIntensity).toBe('subtle');
+    expect(DEFAULT_APP_SETTINGS.showAdvancedDualModel).toBe(true);
+
+    render(
+      <ComposerBar
+        thread={SAMPLE_THREAD}
+        models={SAMPLE_MODELS}
+        vram={{ totalMb: 8192, freeMb: 4096, loadedModels: [] }}
+        latestTelemetry={null}
+        showAdvancedDualModel={DEFAULT_APP_SETTINGS.showAdvancedDualModel}
+        pinFastToCpu={false}
+        activeContextTokens={1200}
+        contextBudget={16384}
+        isBusy={false}
+        canSend={true}
+        followUpMode="queue"
+        recording={false}
+        transcribing={false}
+        onToggleFollowUpMode={vi.fn()}
+        onToggleRecording={vi.fn()}
+        onAttachFiles={vi.fn()}
+        onOpenSkills={vi.fn()}
+        onCompactThread={vi.fn()}
+        onUpdateThread={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTitle(/Fast Scout Model: qwen3:1\.7b/i)).toBeInTheDocument();
+  });
+
+  it('preserves measured turn offsets without overlapping when generating images in an existing chat', async () => {
+    const origOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    const origClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const origClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    const origGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 800,
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        const idx = (this as HTMLElement).getAttribute?.('data-index');
+        if (idx === '0' || idx === '1' || idx === '2') return 420;
+        if (idx === '3') {
+          return (this as HTMLElement).querySelector('.chatgpt-image-card') ? 480 : 120;
+        }
+        return 2000;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() {
+        const idx = (this as HTMLElement).getAttribute?.('data-index');
+        if (idx === '0' || idx === '1' || idx === '2') return 420;
+        if (idx === '3') {
+          return (this as HTMLElement).querySelector('.chatgpt-image-card') ? 480 : 120;
+        }
+        return 2000;
+      },
+    });
+
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      const idx = (this as HTMLElement).getAttribute?.('data-index');
+      const h =
+        idx === '0' || idx === '1' || idx === '2'
+          ? 420
+          : idx === '3'
+            ? (this as HTMLElement).querySelector('.chatgpt-image-card')
+              ? 480
+              : 120
+            : 2000;
+      return {
+        width: 800,
+        height: h,
+        top: 0,
+        left: 0,
+        bottom: h,
+        right: 800,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    };
+
+    try {
+      const project = { id: 'p1', name: 'DemoApp', rootPath: 'C:/tmp/demo', createdAt: 1 };
+      const baseTurns: TurnRecord[] = [
+        { id: 'u1', threadId: 't1', role: 'user', content: 'First prompt', createdAt: 1 },
+        { id: 'a1', threadId: 't1', role: 'assistant', content: 'Long earlier answer', createdAt: 2 },
+        { id: 'u2', threadId: 't1', role: 'user', content: 'Draw a prism', createdAt: 3 },
+      ];
+
+      const { rerender } = render(
+        <ThreadView
+          project={project}
+          thread={SAMPLE_THREAD}
+          turns={baseTurns}
+          approvals={[]}
+          onQuickPrompt={vi.fn()}
+          onOpenProject={vi.fn()}
+          onResolveApproval={vi.fn()}
+          onRestoreSnapshot={vi.fn()}
+          onForkTurn={vi.fn()}
+          onApprovePlan={vi.fn()}
+          onAnswerQuestion={vi.fn()}
+          onEditUserPrompt={vi.fn()}
+        />,
+      );
+
+      const streamingTurn: TurnRecord = {
+        id: 'a2',
+        threadId: 't1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'tc-img',
+            toolName: 'generate_image',
+            summary: 'glass prism',
+            argsPreview: '1024x1024',
+            status: 'running',
+          },
+        ],
+        createdAt: 4,
+      };
+
+      await act(async () => {
+        rerender(
+          <ThreadView
+            project={project}
+            thread={{ ...SAMPLE_THREAD, status: 'verifying' }}
+            turns={[...baseTurns, streamingTurn]}
+            approvals={[]}
+            onQuickPrompt={vi.fn()}
+            onOpenProject={vi.fn()}
+            onResolveApproval={vi.fn()}
+            onRestoreSnapshot={vi.fn()}
+            onForkTurn={vi.fn()}
+            onApprovePlan={vi.fn()}
+            onAnswerQuestion={vi.fn()}
+            onEditUserPrompt={vi.fn()}
+          />,
+        );
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      expect(screen.getByRole('status', { name: 'Generating image' })).toBeInTheDocument();
+      const row1 = document.querySelector('[data-index="1"]') as HTMLElement;
+      const row2 = document.querySelector('[data-index="2"]') as HTMLElement;
+      const row3 = document.querySelector('[data-index="3"]') as HTMLElement;
+      expect(row1.style.transform).toBe('translateY(420px)');
+      expect(row2.style.transform).toBe('translateY(840px)');
+      expect(row3.style.transform).toBe('translateY(1260px)');
+
+      const finishedTurn: TurnRecord = {
+        id: 'a2',
+        threadId: 't1',
+        role: 'assistant',
+        content: 'Generated image.',
+        toolCalls: [
+          {
+            id: 'tc-img',
+            toolName: 'generate_image',
+            summary: 'glass prism',
+            argsPreview: '1024x1024',
+            status: 'ok',
+            durationMs: 1200,
+          },
+        ],
+        generatedImages: [
+          {
+            id: 'img-99',
+            threadId: 't1',
+            turnId: 'a2',
+            filePath: 'C:/tmp/prism.png',
+            dataUrl: 'data:image/png;base64,AAAA',
+            prompt: 'glass prism',
+            width: 1024,
+            height: 1024,
+            steps: 4,
+            seed: 42,
+            backend: 'sd-cpp',
+            model: 'sdxl-turbo',
+            durationMs: 1200,
+            createdAt: 5,
+          },
+        ],
+        createdAt: 4,
+      };
+
+      await act(async () => {
+        rerender(
+          <ThreadView
+            project={project}
+            thread={{ ...SAMPLE_THREAD, status: 'idle' }}
+            turns={[...baseTurns, finishedTurn]}
+            approvals={[]}
+            onQuickPrompt={vi.fn()}
+            onOpenProject={vi.fn()}
+            onResolveApproval={vi.fn()}
+            onRestoreSnapshot={vi.fn()}
+            onForkTurn={vi.fn()}
+            onApprovePlan={vi.fn()}
+            onAnswerQuestion={vi.fn()}
+            onEditUserPrompt={vi.fn()}
+          />,
+        );
+      });
+
+      const img = screen.getByAltText('glass prism');
+      await act(async () => {
+        fireEvent.load(img);
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      expect((document.querySelector('[data-index="1"]') as HTMLElement).style.transform).toBe(
+        'translateY(420px)',
+      );
+      expect((document.querySelector('[data-index="2"]') as HTMLElement).style.transform).toBe(
+        'translateY(840px)',
+      );
+      expect((document.querySelector('[data-index="3"]') as HTMLElement).style.transform).toBe(
+        'translateY(1260px)',
+      );
+    } finally {
+      if (origOffsetHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'offsetHeight', origOffsetHeight);
+      } else {
+        delete (HTMLElement.prototype as { offsetHeight?: unknown }).offsetHeight;
+      }
+      if (origClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', origClientHeight);
+      } else {
+        delete (HTMLElement.prototype as { clientHeight?: unknown }).clientHeight;
+      }
+      if (origClientWidth) {
+        Object.defineProperty(HTMLElement.prototype, 'clientWidth', origClientWidth);
+      } else {
+        delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
+      }
+      HTMLElement.prototype.getBoundingClientRect = origGetBoundingClientRect;
+    }
+  });
+
+  it('triggers Open with preferredEditor, persists dropdown choice, and closes menu on Escape', () => {
+    const onOpenInEditor = vi.fn();
+    render(
+      <Titlebar
+        project={{ id: 'p1', name: 'SmolCode', rootPath: 'C:\\coding Q4 2026\\SmolCode', collapsed: false, createdAt: 1 }}
+        thread={SAMPLE_THREAD}
+        centerView="thread"
+        theme="dark"
+        sidebarOpen={true}
+        terminalOpen={false}
+        miniWindow={false}
+        preferredEditor="auto"
+        onToggleSidebar={vi.fn()}
+        onToggleTerminal={vi.fn()}
+        onToggleTheme={vi.fn()}
+        onToggleMiniWindow={vi.fn()}
+        onNewThread={vi.fn()}
+        onRenameThread={vi.fn()}
+        onOpenInEditor={onOpenInEditor}
+      />,
+    );
+
+    const openBtn = screen.getByRole('button', { name: 'Open' });
+    fireEvent.click(openBtn);
+    expect(onOpenInEditor).toHaveBeenCalledWith('auto', false);
+
+    const chooserBtn = screen.getByRole('button', { name: 'Choose external editor' });
+    fireEvent.click(chooserBtn);
+    expect(screen.getByRole('menu', { name: 'Open workspace in' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'VS Code' }));
+    expect(onOpenInEditor).toHaveBeenCalledWith('vscode', true);
+    expect(screen.queryByRole('menu', { name: 'Open workspace in' })).not.toBeInTheDocument();
+
+    fireEvent.click(chooserBtn);
+    expect(screen.getByRole('menu', { name: 'Open workspace in' })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Open workspace in' })).not.toBeInTheDocument();
   });
 });

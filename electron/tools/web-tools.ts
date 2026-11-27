@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 export interface ObscuraLookupParams {
   url?: string;
@@ -16,19 +16,69 @@ export interface ObscuraLookupResult {
   isError?: boolean;
 }
 
+export function getBundledObscuraCandidates(): string[] {
+  const isWin = process.platform === 'win32';
+  const exeName = isWin ? 'obscura.exe' : 'obscura';
+  const targetDir = `${process.platform}-${process.arch}`;
+  const candidates: string[] = [];
+
+  const resPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (resPath) {
+    candidates.push(join(resPath, 'bin', targetDir, exeName));
+    candidates.push(join(resPath, 'bin', exeName));
+  }
+  candidates.push(
+    join(process.cwd(), 'resources', 'bin', targetDir, exeName),
+    resolve(__dirname, '../../resources/bin', targetDir, exeName),
+    resolve(__dirname, '../../../resources/bin', targetDir, exeName),
+  );
+  return candidates;
+}
+
+export function isBundledObscuraPath(binaryPath: string | null): boolean {
+  if (!binaryPath) return false;
+  const resolved = resolve(binaryPath);
+  return getBundledObscuraCandidates().some((c) => resolve(c) === resolved);
+}
+
+export function getObscuraStorageDir(): string {
+  const dir = join(homedir(), '.smolcode', 'obscura');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export function resolveObscuraBinary(configuredPath?: string): string | null {
-  const candidates = [
-    configuredPath?.trim() || '',
-    process.platform === 'win32' ? 'C:\\Tools\\obscura\\obscura.exe' : '/usr/local/bin/obscura',
-    join(homedir(), '.smolcode', 'bin', process.platform === 'win32' ? 'obscura.exe' : 'obscura'),
-  ].filter(Boolean);
+  const trimmed = configuredPath?.trim();
+  if (trimmed && existsSync(trimmed)) return trimmed;
+
+  // Prefer the Obscura browser bundled inside the SmolCode project / app resources
+  for (const bundled of getBundledObscuraCandidates()) {
+    if (existsSync(bundled)) return bundled;
+  }
+
+  const isWin = process.platform === 'win32';
+  const exeName = isWin ? 'obscura.exe' : 'obscura';
+  const candidates = isWin
+    ? [
+        'C:\\Tools\\obscura\\obscura.exe',
+        join(homedir(), '.smolcode', 'bin', 'obscura.exe'),
+      ]
+    : [
+        '/usr/local/bin/obscura',
+        join(homedir(), '.smolcode', 'bin', 'obscura'),
+      ];
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
 
-  // Fall back to PATH lookup via executable name
-  return process.platform === 'win32' ? 'obscura.exe' : 'obscura';
+  const pathDirs = (process.env.PATH ?? '').split(isWin ? ';' : ':').filter(Boolean);
+  for (const dir of pathDirs) {
+    const full = join(dir, exeName);
+    if (existsSync(full)) return full;
+  }
+
+  return null;
 }
 
 function validateHttpUrl(rawUrl: string): URL {
@@ -79,8 +129,11 @@ async function execObscura(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(binaryPath, args, {
+  const storageDir = getObscuraStorageDir();
+  const fullArgs = ['--storage-dir', storageDir, ...args];
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(binaryPath, fullArgs, {
+      cwd: dirname(resolve(binaryPath)),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -146,7 +199,7 @@ async function execObscura(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ code: code ?? 0, stdout, stderr });
+      resolvePromise({ code: code ?? 0, stdout, stderr });
     });
   });
 }
@@ -163,7 +216,7 @@ export async function runObscuraLookup(
   const binary = resolveObscuraBinary(params.obscuraPath);
   if (!binary) {
     return {
-      output: 'Obscura binary not found. Configure its path in Settings -> General.',
+      output: 'Bundled Obscura browser binary was not found.',
       isError: true,
     };
   }

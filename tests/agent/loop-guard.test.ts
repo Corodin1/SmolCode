@@ -10,10 +10,10 @@ describe('LoopGuard mutation-aware invalidation', () => {
     expect(guard.recordToolAttempt('read_range', { filePath: 'src/a.ts', startLine: 1, endLine: 40 }).action).toBe('allow');
     expect(guard.recordToolAttempt('run_command', { command: 'npm test' }).action).toBe('allow');
 
-    // Immediate identical retry without edits triggers pivot with actionable hint
-    const readPivot = guard.recordToolAttempt('read_range', { filePath: 'src/a.ts', startLine: 1, endLine: 40 });
-    expect(readPivot.action).toBe('pivot');
-    expect(readPivot.reason).toContain('unchanged workspace state');
+    // Immediate identical read retry returns non-error dedup; command retry still triggers pivot
+    const readDedup = guard.recordToolAttempt('read_range', { filePath: 'src/a.ts', startLine: 1, endLine: 40 });
+    expect(readDedup.action).toBe('dedup');
+    expect(readDedup.reason).toContain('unchanged workspace state');
 
     const cmdPivot = guard.recordToolAttempt('run_command', { command: 'npm test' });
     expect(cmdPivot.action).toBe('pivot');
@@ -76,7 +76,7 @@ describe('LoopGuard mutation-aware invalidation', () => {
       guard.recordToolAttempt('patch_hashline', { filePath: 'main.py', edits: [{ n: 9 }] }).action,
     ).toBe('allow');
 
-    // Context-packer folded read invalidation unlocks one re-read, while still halting genuine loops
+    // Context-packer folded read invalidation unlocks one re-read, then dedups at 2x/3x and halts at 4x
     guard.invalidateFoldedReads([
       {
         stepId: 'step-1',
@@ -91,11 +91,29 @@ describe('LoopGuard mutation-aware invalidation', () => {
     expect(
       guard.recordToolAttempt('read_range', { filePath: 'main.py', startLine: 105, endLine: 145 })
         .action,
-    ).toBe('pivot');
+    ).toBe('dedup');
+    expect(
+      guard.recordToolAttempt('read_range', { filePath: 'main.py', startLine: 105, endLine: 145 })
+        .action,
+    ).toBe('dedup');
     expect(
       guard.recordToolAttempt('read_range', { filePath: 'main.py', startLine: 105, endLine: 145 })
         .action,
     ).toBe('halt');
+
+    // In-context read dedup halts at 6x across sub-ranges on the same file, and resets on mutation
+    for (let i = 0; i < 5; i++) {
+      expect(
+        guard.recordInContextReadHit('read_range', 'cube_demo.py', 'Already in context').action,
+      ).toBe('dedup');
+    }
+    expect(
+      guard.recordInContextReadHit('read_range', 'cube_demo.py', 'Already in context').action,
+    ).toBe('halt');
+    guard.invalidateOnMutation('cube_demo.py');
+    expect(
+      guard.recordInContextReadHit('read_range', 'cube_demo.py', 'Already in context').action,
+    ).toBe('dedup');
 
     // Repeated verify_gate failures halt at 3x and clear on mutation
     expect(guard.recordOutcome('verify_gate:typecheck', true, 'TS2322').action).toBe('allow');

@@ -37,7 +37,7 @@ interface TitlebarProps {
   onToggleMiniWindow: () => void;
   onNewThread: () => void;
   onRenameThread: (title: string) => void;
-  onOpenInEditor: (editor: PreferredEditor) => void;
+  onOpenInEditor: (editor: PreferredEditor, persistPreference?: boolean) => void;
 }
 
 const EDITORS: Array<{ id: PreferredEditor; label: string; icon: typeof Code2 }> = [
@@ -77,9 +77,21 @@ export function Titlebar({
         setOpenMenuOpen(false);
       }
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpenMenuOpen(false);
+      }
+    };
     window.addEventListener('mousedown', onDown);
-    return () => window.removeEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
   }, [openMenuOpen]);
+
+  const activeEditorLabel =
+    EDITORS.find((ed) => ed.id === preferredEditor)?.label ?? 'Auto-detect';
 
   const startRename = () => {
     if (!thread) return;
@@ -107,7 +119,11 @@ export function Titlebar({
             : null;
 
   return (
-    <header className="titlebar" role="banner">
+    <header
+      className="titlebar"
+      role="banner"
+      style={openMenuOpen ? { zIndex: 'var(--z-popover)' } : undefined}
+    >
       <div className="titlebar-group" style={{ flex: 1, minWidth: 0 }}>
         <Tooltip label="Toggle sidebar" shortcut="Ctrl+B">
           <button
@@ -229,8 +245,8 @@ export function Titlebar({
                 borderRight: 'none',
                 fontSize: 11.5,
               }}
-              onClick={() => onOpenInEditor(preferredEditor)}
-              title="Open active workspace in editor"
+              onClick={() => onOpenInEditor(preferredEditor, false)}
+              title={`Open active workspace in ${activeEditorLabel}`}
             >
               <ExternalLink size={11.5} aria-hidden="true" />
               <span>Open</span>
@@ -277,7 +293,7 @@ export function Titlebar({
                       role="menuitem"
                       className="pressable hover-surface"
                       onClick={() => {
-                        onOpenInEditor(ed.id);
+                        onOpenInEditor(ed.id, true);
                         setOpenMenuOpen(false);
                       }}
                       style={{

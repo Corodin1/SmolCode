@@ -362,31 +362,13 @@ export function SettingsView({
                   <div>
                     <div style={{ fontWeight: 500 }}>Internet Lookup via Obscura (web_lookup)</div>
                     <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-                      Allow the agent to look up external documentation and package APIs using Obscura.
+                      Allow the agent to look up external documentation and package APIs using the bundled Obscura browser.
                     </div>
                   </div>
                   <input
                     type="checkbox"
                     checked={draft.webLookupEnabled}
                     onChange={(e) => void applySettings({ webLookupEnabled: e.target.checked })}
-                  />
-                </label>
-
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
-                  <span style={{ fontWeight: 500 }}>Obscura Binary Path (optional)</span>
-                  <input
-                    type="text"
-                    value={draft.obscuraPath}
-                    placeholder="Auto-detect (C:\Tools\obscura\obscura.exe or PATH)"
-                    onChange={(e) => setDraft({ ...draft, obscuraPath: e.target.value })}
-                    onBlur={() => void applySettings({ obscuraPath: draft.obscuraPath })}
-                    style={{
-                      height: 34,
-                      padding: '0 10px',
-                      borderRadius: 8,
-                      border: '1px solid var(--border-default)',
-                      background: 'var(--bg-elevated)',
-                    }}
                   />
                 </label>
               </>

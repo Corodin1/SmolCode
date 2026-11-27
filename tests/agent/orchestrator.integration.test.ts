@@ -1094,19 +1094,13 @@ describe('4-Stage AgentOrchestrator integration (mock Ollama server)', () => {
                 done: false,
               }) + '\n',
             );
-          } else if (chatCallIdx === 3 || chatCallIdx === 4) {
-            // Turn 2: repeat identical read_range 3x across 2 steps (2x in step 1 + 1x in step 2)
-            // with another read_range after it in the same parallel batch to verify zero 'running' orphans
-            const calls =
-              chatCallIdx === 3
-                ? [
-                    { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
-                    { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
-                  ]
-                : [
-                    { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
-                    { function: { name: 'read_range', arguments: { filePath: 'src/extra.ts', startLine: 1, endLine: 1 } } },
-                  ];
+          } else if (chatCallIdx >= 3 && chatCallIdx <= 9) {
+            // Turn 2: repeat read_range across steps until LoopGuard halts mid-parallel-batch
+            // with another read_range after it in the same batch to verify zero 'running' orphans
+            const calls = [
+              { function: { name: 'read_range', arguments: { filePath: 'src/helper.ts', startLine: 1, endLine: 3 } } },
+              { function: { name: 'read_range', arguments: { filePath: 'src/extra.ts', startLine: 1, endLine: 1 } } },
+            ];
             res.write(
               JSON.stringify({
                 message: { role: 'assistant', content: '', tool_calls: calls },
@@ -1196,7 +1190,7 @@ describe('4-Stage AgentOrchestrator integration (mock Ollama server)', () => {
     await orch.runUserTurn({ threadId: thread.id, content: 'Loop read test' });
     const turns = store.listTurns(thread.id);
     const lastAssistant = turns[turns.length - 1];
-    expect(lastAssistant.content).toContain('Stopped repeated identical call to "read_range"');
+    expect(lastAssistant.content).toContain('Stopped repeated "read_range" on "src/helper.ts"');
     expect((lastAssistant.toolCalls ?? []).some((t) => t.status === 'running')).toBe(false);
 
     orch.dispose();
@@ -1450,6 +1444,272 @@ describe('4-Stage AgentOrchestrator integration (mock Ollama server)', () => {
     expect(chatSysPrompts[1]).toContain('Reasoning Mode: ULTRA');
     expect(capturedNumCtx).toContain(8192);
     expect(capturedNumCtx).toContain(24576);
+
+    orch.dispose();
+    store.close();
+  });
+
+  it('runs beyond previous step limits without capping turn steps', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-nostepcap-'));
+    const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-nostepcap-blobs-'));
+    for (let i = 1; i <= 12; i++) {
+      writeFileSync(join(dir, `f${i}.txt`), `file-${i}\n`, 'utf8');
+    }
+
+    let chatCallIdx = 0;
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/show') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: ['tools'] }));
+        return;
+      }
+      if (req.url === '/api/chat') {
+        let body = '';
+        req.on('data', (c) => (body += String(c)));
+        req.on('end', () => {
+          void body;
+          chatCallIdx += 1;
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          if (chatCallIdx <= 12) {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: `<tool_call>{"name":"read_range","arguments":{"filePath":"f${chatCallIdx}.txt","startLine":1,"endLine":1}}</tool_call>`,
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content:
+                    '<tool_call>{"name":"finish_turn","arguments":{"summary":"Completed 13 steps without hitting a step cap."}}</tool_call>',
+                },
+                done: false,
+              }) + '\n',
+            );
+          }
+          res.write(
+            JSON.stringify({
+              done: true,
+              prompt_eval_count: 50,
+              prompt_eval_duration: 5_000_000,
+              eval_count: 15,
+              eval_duration: 10_000_000,
+            }) + '\n',
+          );
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(blobDir, { recursive: true, force: true }),
+    );
+
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'llama3.1:8b',
+      defaultFastModel: 'llama3.1:8b',
+    });
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      new SnapshotManager(store, blobDir),
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+    const proj = store.upsertProject({ name: 'nostepcap', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'No step cap',
+      interactionMode: 'build',
+      mainModel: 'llama3.1:8b',
+      fastModel: 'llama3.1:8b',
+      effort: 'low',
+      approvalPolicy: 'auto',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    await orch.runUserTurn({ threadId: thread.id, content: 'Read all lines one by one' });
+
+    const turns = store.listTurns(thread.id);
+    const assistantTurn = turns.find((t) => t.role === 'assistant');
+    expect(chatCallIdx).toBe(13);
+    expect(assistantTurn?.content).toBe('Completed 13 steps without hitting a step cap.');
+
+    orch.dispose();
+    store.close();
+  });
+
+  it('auto-expands small files and deduplicates repeated read_range slices without error spam', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolcode-readcache-'));
+    const blobDir = mkdtempSync(join(tmpdir(), 'smolcode-readcache-blobs-'));
+    const cubeFile = join(dir, 'cube_demo.py');
+    const lines = Array.from({ length: 108 }, (_, i) => `row_${i + 1} = ${i + 1}`);
+    writeFileSync(cubeFile, lines.join('\n') + '\n', 'utf8');
+    const line28Hash = lineHash('row_28 = 28');
+
+    let chatCallIdx = 0;
+    const capturedToolResponses: string[] = [];
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/show') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: ['tools'] }));
+        return;
+      }
+      if (req.url === '/api/chat') {
+        let body = '';
+        req.on('data', (c) => (body += String(c)));
+        req.on('end', () => {
+          const parsedBody = JSON.parse(body || '{}') as {
+            messages?: Array<{ role?: string; content?: string }>;
+          };
+          for (const m of parsedBody.messages ?? []) {
+            if (m.role === 'tool' && m.content) {
+              capturedToolResponses.push(m.content);
+            }
+          }
+          chatCallIdx += 1;
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          if (chatCallIdx === 1) {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content:
+                    '<tool_call>{"name":"read_range","arguments":{"filePath":"cube_demo.py","startLine":95,"endLine":103}}</tool_call>\n' +
+                    '<tool_call>{"name":"read_range","arguments":{"filePath":"cube_demo.py","startLine":20,"endLine":30}}</tool_call>',
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else if (chatCallIdx === 2) {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content:
+                    '<tool_call>{"name":"read_range","arguments":{"filePath":"cube_demo.py","startLine":1,"endLine":108}}</tool_call>\n' +
+                    '<tool_call>{"name":"read_range","arguments":{"filePath":"cube_demo.py","startLine":27,"endLine":31}}</tool_call>',
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else if (chatCallIdx === 3) {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content: `<tool_call>{"name":"patch_hashline","arguments":{"filePath":"cube_demo.py","edits":[{"op":"replace_range","startAnchor":"28:${line28Hash}","content":"row_28 = 280"}]}}</tool_call>`,
+                },
+                done: false,
+              }) + '\n',
+            );
+          } else {
+            res.write(
+              JSON.stringify({
+                message: {
+                  role: 'assistant',
+                  content:
+                    '<tool_call>{"name":"finish_turn","arguments":{"summary":"Updated row_28 cleanly."}}</tool_call>',
+                },
+                done: false,
+              }) + '\n',
+            );
+          }
+          res.write(
+            JSON.stringify({
+              done: true,
+              prompt_eval_count: 60,
+              prompt_eval_duration: 5_000_000,
+              eval_count: 20,
+              eval_duration: 10_000_000,
+            }) + '\n',
+          );
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(blobDir, { recursive: true, force: true }),
+    );
+
+    const store = new SmolCodeStore(':memory:');
+    store.updateSettings({
+      ollamaBaseUrl: baseUrl,
+      defaultMainModel: 'llama3.1:8b',
+      defaultFastModel: 'llama3.1:8b',
+    });
+    const ollama = new OllamaClient(baseUrl);
+    const orch = new AgentOrchestrator(
+      store,
+      new SnapshotManager(store, blobDir),
+      ollama,
+      new VramScheduler(ollama),
+      new TreeSitterService(),
+    );
+    const proj = store.upsertProject({ name: 'readcache', rootPath: dir });
+    const thread = store.createThread({
+      projectId: proj.id,
+      title: 'ReadCache test',
+      interactionMode: 'build',
+      mainModel: 'llama3.1:8b',
+      fastModel: 'llama3.1:8b',
+      effort: 'low',
+      approvalPolicy: 'auto',
+      draftText: '',
+      draftChips: [],
+      status: 'idle',
+      unread: false,
+      pinned: false,
+    });
+
+    await orch.runUserTurn({ threadId: thread.id, content: 'Inspect and fix row twenty eight' });
+
+    const turns = store.listTurns(thread.id);
+    const assistantTurn = turns.find((t) => t.role === 'assistant');
+    expect(assistantTurn?.content).toBe('Updated row_28 cleanly.');
+    expect(readFileSync(cubeFile, 'utf8')).toContain('row_28 = 280');
+
+    const readLogs = (assistantTurn?.toolCalls ?? []).filter((t) => t.toolName === 'read_range');
+    expect(readLogs.length).toBeGreaterThanOrEqual(4);
+    expect(readLogs.every((t) => t.status === 'ok')).toBe(true);
+    expect(
+      capturedToolResponses.some(
+        (r) => r.includes('Already in step 1') || r.includes('Already in Prefetched Context Slices'),
+      ),
+    ).toBe(true);
 
     orch.dispose();
     store.close();

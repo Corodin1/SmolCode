@@ -1,10 +1,9 @@
 import { clipboard, ClipboardItem, dialog, ipcMain, nativeImage, nativeTheme, Notification, shell, type BrowserWindow, type Rectangle } from 'electron';
-import { exec, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path';
-import { promisify } from 'node:util';
 import { resolveWindowMaterial } from '../../src/shared/theme-presets';
 import { resolveInsideWorkdir } from '../tools/fs-tools';
+import { openTargetInEditor } from '../tools/open-in-editor';
 import {
   detectLocalImageBackends,
   downloadImageModelPreset,
@@ -39,18 +38,6 @@ import {
   readSkillResource,
   saveSkillFile,
 } from '../tools/agents-skills';
-
-const execAsync = promisify(exec);
-
-async function commandExists(cmd: string): Promise<boolean> {
-  try {
-    const check = process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`;
-    await execAsync(check);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export function registerIpcHandlers(deps: {
   getWindow: () => BrowserWindow | null;
@@ -132,58 +119,13 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(
     'smolcode:open-in-editor',
-    async (_e, targetPath: string, editor: PreferredEditor) => {
-      if (!targetPath) return { ok: false, message: 'No target path' };
-      try {
-        if (editor === 'explorer') {
-          const err = await shell.openPath(targetPath);
-          return err ? { ok: false, message: err } : { ok: true };
-        }
-        if (editor === 'terminal') {
-          if (process.platform === 'win32') {
-            spawn('cmd.exe', ['/c', 'start', 'powershell.exe', '-NoExit'], {
-              cwd: targetPath,
-              detached: true,
-              stdio: 'ignore',
-            }).unref();
-          } else {
-            await shell.openPath(targetPath);
-          }
-          return { ok: true };
-        }
-
-        const candidates: Array<{ cmd: string; name: string }> =
-          editor === 'cursor'
-            ? [{ cmd: 'cursor', name: 'Cursor' }]
-            : editor === 'windsurf'
-              ? [{ cmd: 'windsurf', name: 'Windsurf' }]
-              : editor === 'vscode'
-                ? [{ cmd: 'code', name: 'VS Code' }]
-                : [
-                    { cmd: 'cursor', name: 'Cursor' },
-                    { cmd: 'code', name: 'VS Code' },
-                    { cmd: 'windsurf', name: 'Windsurf' },
-                  ];
-
-        for (const c of candidates) {
-          if (await commandExists(c.cmd)) {
-            spawn(c.cmd, [targetPath], {
-              detached: true,
-              stdio: 'ignore',
-              shell: process.platform === 'win32',
-            }).unref();
-            return { ok: true, message: `Opened in ${c.name}` };
-          }
-        }
-        await shell.openPath(targetPath);
-        return { ok: true, message: 'Opened in system file explorer' };
-      } catch (err) {
-        return {
-          ok: false,
-          message: err instanceof Error ? err.message : String(err),
-        };
-      }
-    },
+    (_e, targetPath: string, editor: PreferredEditor) =>
+      openTargetInEditor({
+        targetPath,
+        editor,
+        defaultShell: store.getSettings().defaultShell,
+        shell,
+      }),
   );
 
   ipcMain.handle('smolcode:toggle-mini-window', (_e, mini: boolean) => {

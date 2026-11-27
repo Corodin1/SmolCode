@@ -57,21 +57,62 @@ interface StarParticle {
   driftY: number;
 }
 
+interface GlintParticle {
+  x: number;
+  y: number;
+  size: number;
+  duration: number;
+  delay: number;
+}
+
+interface BurstSpark {
+  dx: number;
+  dy: number;
+  angle: number;
+  length: number;
+  duration: number;
+  delay: number;
+  tone: 'violet' | 'blue' | 'core';
+}
+
 const ULTRA_STARS: readonly StarParticle[] = [
-  { x: 7, y: 34, size: 2.5, opacity: 0.9, duration: 2.4, delay: 0, driftX: 4, driftY: -2 },
-  { x: 11, y: 66, size: 1.8, opacity: 0.65, duration: 3.1, delay: -0.9, driftX: 3, driftY: 2 },
-  { x: 17, y: 46, size: 3.2, opacity: 0.95, duration: 2.8, delay: -1.6, driftX: -3, driftY: 2 },
-  { x: 24, y: 28, size: 2, opacity: 0.72, duration: 2.2, delay: -0.4, driftX: 5, driftY: 1 },
-  { x: 29, y: 72, size: 2.4, opacity: 0.85, duration: 3.4, delay: -2.1, driftX: 4, driftY: -2 },
-  { x: 37, y: 36, size: 1.9, opacity: 0.78, duration: 2.6, delay: -1.1, driftX: -4, driftY: 2 },
-  { x: 45, y: 58, size: 3.4, opacity: 0.92, duration: 3.0, delay: -0.6, driftX: 4, driftY: -1 },
-  { x: 52, y: 32, size: 2.2, opacity: 0.7, duration: 2.3, delay: -1.8, driftX: 3, driftY: 2 },
-  { x: 58, y: 68, size: 2.7, opacity: 0.88, duration: 2.9, delay: -0.3, driftX: -3, driftY: -2 },
-  { x: 64, y: 42, size: 1.8, opacity: 0.68, duration: 3.2, delay: -2.4, driftX: 5, driftY: 1 },
-  { x: 71, y: 26, size: 2.9, opacity: 0.95, duration: 2.5, delay: -1.3, driftX: 3, driftY: 2 },
-  { x: 77, y: 62, size: 2.1, opacity: 0.76, duration: 2.7, delay: -0.7, driftX: -4, driftY: -1 },
-  { x: 83, y: 38, size: 3.1, opacity: 0.9, duration: 3.3, delay: -1.9, driftX: 3, driftY: 2 },
-  { x: 88, y: 74, size: 2.3, opacity: 0.82, duration: 2.4, delay: -1.0, driftX: -3, driftY: -2 },
+  { x: 6, y: 32, size: 2.5, opacity: 0.92, duration: 2.1, delay: 0, driftX: 14, driftY: -3 },
+  { x: 10, y: 70, size: 1.7, opacity: 0.68, duration: 2.8, delay: -0.9, driftX: 11, driftY: 3 },
+  { x: 15, y: 48, size: 3.3, opacity: 0.96, duration: 2.4, delay: -1.6, driftX: 16, driftY: 2 },
+  { x: 21, y: 24, size: 2.0, opacity: 0.75, duration: 1.9, delay: -0.4, driftX: 13, driftY: 2 },
+  { x: 26, y: 76, size: 2.6, opacity: 0.88, duration: 3.0, delay: -2.1, driftX: 15, driftY: -3 },
+  { x: 32, y: 38, size: 1.8, opacity: 0.78, duration: 2.3, delay: -1.1, driftX: 10, driftY: 3 },
+  { x: 38, y: 60, size: 3.4, opacity: 0.94, duration: 2.6, delay: -0.6, driftX: 17, driftY: -2 },
+  { x: 44, y: 26, size: 2.1, opacity: 0.74, duration: 2.0, delay: -1.8, driftX: 12, driftY: 3 },
+  { x: 50, y: 72, size: 2.8, opacity: 0.9, duration: 2.5, delay: -0.3, driftX: 14, driftY: -3 },
+  { x: 55, y: 42, size: 1.7, opacity: 0.7, duration: 2.9, delay: -2.4, driftX: 16, driftY: 2 },
+  { x: 61, y: 24, size: 3.1, opacity: 0.95, duration: 2.2, delay: -1.3, driftX: 12, driftY: 3 },
+  { x: 66, y: 64, size: 2.2, opacity: 0.8, duration: 2.4, delay: -0.7, driftX: 14, driftY: -2 },
+  { x: 72, y: 36, size: 3.2, opacity: 0.92, duration: 2.7, delay: -1.9, driftX: 13, driftY: 3 },
+  { x: 77, y: 75, size: 2.3, opacity: 0.84, duration: 2.1, delay: -1.0, driftX: 11, driftY: -3 },
+  { x: 82, y: 46, size: 1.9, opacity: 0.76, duration: 2.5, delay: -1.5, driftX: 9, driftY: 2 },
+  { x: 13, y: 20, size: 1.5, opacity: 0.62, duration: 3.2, delay: -0.5, driftX: 12, driftY: 2 },
+  { x: 47, y: 50, size: 2.0, opacity: 0.82, duration: 1.8, delay: -1.2, driftX: 15, driftY: -2 },
+  { x: 70, y: 52, size: 1.6, opacity: 0.66, duration: 2.6, delay: -2.2, driftX: 12, driftY: 2 },
+];
+
+const ULTRA_GLINTS: readonly GlintParticle[] = [
+  { x: 22, y: 46, size: 8, duration: 2.3, delay: -0.4 },
+  { x: 53, y: 34, size: 9, duration: 2.7, delay: -1.5 },
+  { x: 76, y: 56, size: 7.5, duration: 2.1, delay: -0.9 },
+];
+
+const ULTRA_BURST_SPARKS: readonly BurstSpark[] = [
+  { dx: -26, dy: -22, angle: -140, length: 9, duration: 480, delay: 0, tone: 'violet' },
+  { dx: -10, dy: -30, angle: -108, length: 10, duration: 520, delay: 15, tone: 'core' },
+  { dx: 14, dy: -28, angle: -64, length: 9, duration: 490, delay: 25, tone: 'blue' },
+  { dx: 29, dy: -16, angle: -28, length: 11, duration: 540, delay: 10, tone: 'violet' },
+  { dx: 34, dy: 2, angle: 4, length: 10, duration: 500, delay: 20, tone: 'core' },
+  { dx: 27, dy: 20, angle: 36, length: 9, duration: 530, delay: 0, tone: 'blue' },
+  { dx: 11, dy: 29, angle: 69, length: 10, duration: 510, delay: 30, tone: 'violet' },
+  { dx: -14, dy: 28, angle: 116, length: 8, duration: 470, delay: 15, tone: 'core' },
+  { dx: -29, dy: 16, angle: 151, length: 9, duration: 520, delay: 20, tone: 'blue' },
+  { dx: -36, dy: -3, angle: 185, length: 11, duration: 495, delay: 5, tone: 'violet' },
 ];
 
 export function EffortSignalIcon({
@@ -130,6 +171,7 @@ export function EffortSlider({
   const isPointerDraggingRef = useRef(false);
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [ultraBurstCount, setUltraBurstCount] = useState(0);
 
   const maxIdx = EFFORT_TIERS.length - 1;
   const selectedIdx = Math.max(
@@ -144,6 +186,15 @@ export function EffortSlider({
 
   const progress = activeFloatIdx / maxIdx;
 
+  const selectTier = (nextValue: EffortLevel) => {
+    if (nextValue === 'xhigh' && value !== 'xhigh') {
+      setUltraBurstCount((c) => c + 1);
+    }
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+  };
+
   const computeFloatIndexFromClientX = (clientX: number): number => {
     const el = trackRef.current;
     if (!el) return selectedIdx;
@@ -156,8 +207,8 @@ export function EffortSlider({
   const commitRoundedIndex = (floatIdx: number) => {
     const rounded = Math.min(maxIdx, Math.max(0, Math.round(floatIdx)));
     const target = EFFORT_TIERS[rounded];
-    if (target && target.value !== value) {
-      onChange(target.value);
+    if (target) {
+      selectTier(target.value);
     }
   };
 
@@ -206,7 +257,7 @@ export function EffortSlider({
     if (nextIdx !== null) {
       e.preventDefault();
       const target = EFFORT_TIERS[nextIdx];
-      if (target) onChange(target.value);
+      if (target) selectTier(target.value);
     }
   };
 
@@ -244,118 +295,170 @@ export function EffortSlider({
         </span>
       </div>
 
-      <div
-        ref={trackRef}
-        role="slider"
-        tabIndex={0}
-        aria-label="Reasoning effort"
-        aria-valuemin={0}
-        aria-valuemax={maxIdx}
-        aria-valuenow={selectedIdx}
-        aria-valuetext={activeTier.label}
-        className="codex-effort-track"
-        data-dragging={draggingIdx !== null ? 'true' : 'false'}
-        data-tier={activeTier.value}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onKeyDown={handleKeyDown}
-        onMouseLeave={() => setHoveredIdx(null)}
-      >
-        {/* Progressive capsule fill clipped cleanly up to thumb edge */}
-        <div
-          className="codex-effort-fill"
-          data-tier={activeTier.value}
-          aria-hidden="true"
-          style={{
-            opacity: progress <= 0.01 ? 0 : 1,
-            clipPath: `inset(0 calc((1 - ${progress}) * (100% - 34px)) 0 0 round 9999px)`,
-            transition: draggingIdx !== null ? 'none' : undefined,
-          }}
-        >
-          {isUltra && (
-            <>
-              <div className="codex-effort-ultra-sheen" />
-              <div className="codex-effort-stars">
-                {ULTRA_STARS.map((star, i) => (
-                  <span
-                    key={i}
-                    className="codex-effort-star"
-                    style={
-                      {
-                        left: `${star.x}%`,
-                        top: `${star.y}%`,
-                        width: star.size,
-                        height: star.size,
-                        '--star-opacity': star.opacity,
-                        '--star-duration': `${star.duration}s`,
-                        '--star-delay': `${star.delay}s`,
-                        '--star-dx': `${star.driftX}px`,
-                        '--star-dy': `${star.driftY}px`,
-                      } as React.CSSProperties
-                    }
-                  />
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Stop dots centered along the thumb rail */}
-        <div className="codex-effort-dots" aria-hidden="true">
-          {EFFORT_TIERS.map((tier, idx) => {
-            const isCovered = idx === snappedIdx && draggingIdx === null;
-            const isHovered = hoveredIdx === idx;
-            const isPassed = idx < snappedIdx;
-            return (
+      <div className="codex-effort-track-wrap">
+        {/* One-shot themed shockwave & sparks anchored on the Ultra thumb */}
+        {isUltra && ultraBurstCount > 0 && (
+          <div key={ultraBurstCount} className="codex-effort-ultra-burst" aria-hidden="true">
+            <span className="codex-effort-track-shockwave" />
+            <span className="codex-effort-shockwave" />
+            <span className="codex-effort-shockwave-inner" />
+            {ULTRA_BURST_SPARKS.map((spark, i) => (
               <span
-                key={tier.value}
-                className="codex-effort-dot-stop"
-                data-covered={isCovered ? 'true' : 'false'}
-                data-hovered={isHovered ? 'true' : 'false'}
-                data-passed={isPassed ? 'true' : 'false'}
-                style={{ left: `${(idx / maxIdx) * 100}%` }}
+                key={i}
+                className="codex-effort-spark"
+                data-tone={spark.tone}
+                style={
+                  {
+                    width: spark.length,
+                    '--spark-x': `${spark.dx}px`,
+                    '--spark-y': `${spark.dy}px`,
+                    '--spark-angle': `${spark.angle}deg`,
+                    '--spark-duration': `${spark.duration}ms`,
+                    '--spark-delay': `${spark.delay}ms`,
+                  } as React.CSSProperties
+                }
               />
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
 
-        {/* Circular white thumb gliding along [18px .. width-18px] */}
-        <div className="codex-effort-rail" aria-hidden="true">
+        <div
+          ref={trackRef}
+          role="slider"
+          tabIndex={0}
+          aria-label="Reasoning effort"
+          aria-valuemin={0}
+          aria-valuemax={maxIdx}
+          aria-valuenow={selectedIdx}
+          aria-valuetext={activeTier.label}
+          className="codex-effort-track"
+          data-dragging={draggingIdx !== null ? 'true' : 'false'}
+          data-tier={activeTier.value}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onKeyDown={handleKeyDown}
+          onMouseLeave={() => setHoveredIdx(null)}
+        >
+          {/* Progressive capsule fill clipped cleanly up to thumb edge */}
           <div
-            className="codex-effort-thumb-mover"
+            className="codex-effort-fill"
+            data-tier={activeTier.value}
+            aria-hidden="true"
             style={{
-              transform: `translateX(${progress * 100}%)`,
+              opacity: progress <= 0.01 ? 0 : 1,
+              clipPath: `inset(0 calc((1 - ${progress}) * (100% - 34px)) 0 0 round 9999px)`,
               transition: draggingIdx !== null ? 'none' : undefined,
             }}
           >
-            <div className="codex-effort-thumb" data-ultra={isUltra ? 'true' : 'false'} />
+            {isUltra && (
+              <>
+                <div className="codex-effort-nebula codex-effort-nebula-a" />
+                <div className="codex-effort-nebula codex-effort-nebula-b" />
+                <div className="codex-effort-ultra-sheen" />
+                <div className="codex-effort-stars">
+                  {ULTRA_STARS.map((star, i) => (
+                    <span
+                      key={i}
+                      className="codex-effort-star"
+                      style={
+                        {
+                          left: `${star.x}%`,
+                          top: `${star.y}%`,
+                          width: star.size,
+                          height: star.size,
+                          '--star-opacity': star.opacity,
+                          '--star-duration': `${star.duration}s`,
+                          '--star-delay': `${star.delay}s`,
+                          '--star-dx': `${star.driftX}px`,
+                          '--star-dy': `${star.driftY}px`,
+                        } as React.CSSProperties
+                      }
+                    />
+                  ))}
+                  {ULTRA_GLINTS.map((glint, i) => (
+                    <svg
+                      key={`glint-${i}`}
+                      viewBox="0 0 16 16"
+                      className="codex-effort-glint"
+                      style={
+                        {
+                          left: `${glint.x}%`,
+                          top: `${glint.y}%`,
+                          width: glint.size,
+                          height: glint.size,
+                          '--glint-duration': `${glint.duration}s`,
+                          '--glint-delay': `${glint.delay}s`,
+                        } as React.CSSProperties
+                      }
+                    >
+                      <path
+                        d="M8 0L9.8 6.2L16 8L9.8 9.8L8 16L6.2 9.8L0 8L6.2 6.2Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-        </div>
 
-        {/* Accessible clickable stop targets */}
-        <div className="codex-effort-stops">
-          {EFFORT_TIERS.map((tier, idx) => {
-            const isSelected = idx === snappedIdx;
-            return (
-              <button
-                key={tier.value}
-                type="button"
-                tabIndex={-1}
-                aria-label={tier.label}
-                aria-pressed={isSelected}
-                title={tier.label}
-                className="codex-effort-stop"
-                data-active={isSelected ? 'true' : 'false'}
-                onMouseEnter={() => setHoveredIdx(idx)}
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  onChange(tier.value);
-                }}
-              />
-            );
-          })}
+          {/* Stop dots centered along the thumb rail */}
+          <div className="codex-effort-dots" aria-hidden="true">
+            {EFFORT_TIERS.map((tier, idx) => {
+              const isCovered = idx === snappedIdx && draggingIdx === null;
+              const isHovered = hoveredIdx === idx;
+              const isPassed = idx < snappedIdx;
+              return (
+                <span
+                  key={tier.value}
+                  className="codex-effort-dot-stop"
+                  data-covered={isCovered ? 'true' : 'false'}
+                  data-hovered={isHovered ? 'true' : 'false'}
+                  data-passed={isPassed ? 'true' : 'false'}
+                  style={{ left: `${(idx / maxIdx) * 100}%` }}
+                />
+              );
+            })}
+          </div>
+
+          {/* Circular white thumb gliding along [18px .. width-18px] */}
+          <div className="codex-effort-rail" aria-hidden="true">
+            <div
+              className="codex-effort-thumb-mover"
+              style={{
+                transform: `translateX(${progress * 100}%)`,
+                transition: draggingIdx !== null ? 'none' : undefined,
+              }}
+            >
+              <div className="codex-effort-thumb" data-ultra={isUltra ? 'true' : 'false'} />
+            </div>
+          </div>
+
+          {/* Accessible clickable stop targets */}
+          <div className="codex-effort-stops">
+            {EFFORT_TIERS.map((tier, idx) => {
+              const isSelected = idx === snappedIdx;
+              return (
+                <button
+                  key={tier.value}
+                  type="button"
+                  tabIndex={-1}
+                  aria-label={tier.label}
+                  aria-pressed={isSelected}
+                  title={tier.label}
+                  className="codex-effort-stop"
+                  data-active={isSelected ? 'true' : 'false'}
+                  onMouseEnter={() => setHoveredIdx(idx)}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    selectTier(tier.value);
+                  }}
+                />
+              );
+            })}
+          </div>
         </div>
       </div>
 

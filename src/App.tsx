@@ -319,10 +319,13 @@ export function App() {
         onRenameThread={(title) => {
           if (ws.activeThread) void ws.updateThread(ws.activeThread.id, { title });
         }}
-        onOpenInEditor={(editor) => {
+        onOpenInEditor={(editor, persistPreference) => {
           if (!activeWorkdir) return;
           void window.smolcode?.openInEditor(activeWorkdir, editor).then((res) => {
-            if (res.message) ws.showToast(res.message);
+            if (persistPreference && res?.ok && editor !== ws.settings.preferredEditor) {
+              void ws.updateSettings({ preferredEditor: editor });
+            }
+            if (res?.message) ws.showToast(res.message);
           });
         }}
       />
@@ -577,7 +580,7 @@ export function App() {
                   const cleanRel = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
                   const full = `${ws.activeProject.rootPath.replace(/[\\/]+$/, '')}/${cleanRel}`;
                   void window.smolcode?.openInEditor(full, ws.settings.preferredEditor).then((res) => {
-                    if (res.message) ws.showToast(res.message);
+                    if (res?.message) ws.showToast(res.message);
                   });
                 }}
                 onRetryToolError={(tool) => {
@@ -842,7 +845,7 @@ export function App() {
             void window.smolcode
               ?.openInEditor(targetPath, ws.settings.preferredEditor)
               .then((res) => {
-                if (res.message) ws.showToast(res.message);
+                if (res?.message) ws.showToast(res.message);
               });
           }}
           onClose={() => setFilePreviewTarget(null)}

@@ -286,7 +286,7 @@ export function packThreeZoneContext(params: {
       if (isFoldedEpoch && tc.isReadOnlySlice && resultContent.length > 260) {
         const target =
           String(tc.arguments.filePath ?? tc.arguments.path ?? tc.arguments.query ?? 'target');
-        const folded = `[Folded ${tc.name}(${target}) — already reflected in Working Memory Ledger; re-read if needed]`;
+        const folded = `[Folded ${tc.name}(${target}) — reflected in Working Memory Ledger; call ${tc.name} again only if exact line:hash anchors are needed]`;
         tokensSavedByFolding += Math.max(
           0,
           estimateTokens(resultContent) - estimateTokens(folded),

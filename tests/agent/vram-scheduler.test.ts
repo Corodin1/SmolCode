@@ -63,7 +63,7 @@ describe('VRAM Scheduler & Effort Profiles', () => {
     const high = getEffortProfile('high');
     const xhigh = getEffortProfile('xhigh');
 
-    // Effort scales thinking, context/output budgets, step cap, scout, and verify depth
+    // Effort scales thinking, context/output budgets, scout, and verify depth
     expect(low.mainThink).toBe(false);
     expect(med.mainThink).toBe(true);
     expect(high.mainThink).toBe(true);
@@ -77,11 +77,6 @@ describe('VRAM Scheduler & Effort Profiles', () => {
     expect(low.numPredict).toBeLessThan(med.numPredict);
     expect(med.numPredict).toBeLessThan(high.numPredict);
     expect(high.numPredict).toBeLessThan(xhigh.numPredict);
-
-    expect(low.maxMainSteps).toBe(10);
-    expect(med.maxMainSteps).toBe(18);
-    expect(high.maxMainSteps).toBe(24);
-    expect(xhigh.maxMainSteps).toBe(32);
 
     expect(low.runFastScout).toBe(false);
     expect(med.runFastScout).toBe(true);

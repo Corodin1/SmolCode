@@ -6,7 +6,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { marked } from 'marked';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   GeneratedImageRecord,
   ThreadStatus,
@@ -26,6 +26,7 @@ import { QuestionCard } from './QuestionCard';
 
 interface TurnItemProps {
   turn: TurnRecord;
+  turnIndex?: number;
   isStreaming: boolean;
   canUndo?: boolean;
   threadStatus?: ThreadStatus;
@@ -45,6 +46,7 @@ interface TurnItemProps {
   onSaveGeneratedImage?: (image: GeneratedImageRecord) => Promise<void> | void;
   onCopyGeneratedImage?: (image: GeneratedImageRecord) => Promise<boolean> | boolean | void;
   onReuseImagePrompt?: (prompt: string) => void;
+  onResizeRow?: (turnIndex: number) => void;
   onLayoutChange?: () => void;
 }
 
@@ -143,6 +145,7 @@ function deriveActiveStatusLabel(
 
 export function TurnItem({
   turn,
+  turnIndex,
   isStreaming,
   canUndo = !isStreaming,
   threadStatus,
@@ -157,6 +160,7 @@ export function TurnItem({
   onSaveGeneratedImage,
   onCopyGeneratedImage,
   onReuseImagePrompt,
+  onResizeRow,
   onLayoutChange,
 }: TurnItemProps) {
   const [thinkingOverride, setThinkingOverride] = useState<boolean | null>(null);
@@ -166,6 +170,14 @@ export function TurnItem({
     image: GeneratedImageRecord;
     src: string;
   } | null>(null);
+
+  const handleLayoutChange = useCallback(() => {
+    if (turnIndex !== undefined && onResizeRow) {
+      onResizeRow(turnIndex);
+    } else {
+      onLayoutChange?.();
+    }
+  }, [onLayoutChange, onResizeRow, turnIndex]);
 
   useEffect(() => {
     if (!isStreaming) return;
@@ -316,9 +328,7 @@ export function TurnItem({
             className="pressable hover-surface"
             onClick={() => {
               setThinkingOverride(!thinkingOpen);
-              if (onLayoutChange) {
-                requestAnimationFrame(() => onLayoutChange());
-              }
+              requestAnimationFrame(() => handleLayoutChange());
             }}
             aria-expanded={thinkingOpen}
             style={{
@@ -377,7 +387,7 @@ export function TurnItem({
           onPreviewFile={onPreviewFile}
           onOpenFileInEditor={onOpenFileInEditor}
           onRetryToolError={onRetryToolError}
-          onLayoutChange={onLayoutChange}
+          onLayoutChange={handleLayoutChange}
         />
       )}
 
@@ -407,7 +417,7 @@ export function TurnItem({
         <GeneratingImagePlaceholder
           prompt={runningImageTool.summary}
           aspectRatio={parseImageAspectRatio(runningImageTool.argsPreview)}
-          onLayoutChange={onLayoutChange}
+          onLayoutChange={handleLayoutChange}
         />
       )}
 
@@ -421,7 +431,7 @@ export function TurnItem({
               onSaveToWorkspace={onSaveGeneratedImage}
               onCopyImage={onCopyGeneratedImage}
               onReusePrompt={onReuseImagePrompt}
-              onLayoutChange={onLayoutChange}
+              onLayoutChange={handleLayoutChange}
             />
           ))}
         </div>

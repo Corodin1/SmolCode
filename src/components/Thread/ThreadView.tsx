@@ -100,13 +100,33 @@ export function ThreadView({
   const rafScrollRef = useRef<number | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
+  const getItemKey = useCallback(
+    (index: number) => turns[index]?.id ?? index,
+    [turns],
+  );
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: turns.length,
     getScrollElement: () => scrollRef.current,
+    getItemKey,
     estimateSize: () => 150,
     overscan: 6,
   });
+
+  const remeasureRow = useCallback(
+    (index: number) => {
+      const scroller = scrollRef.current;
+      if (!scroller) return;
+      const rowEl = scroller.querySelector<HTMLElement>(`[data-index="${index}"]`);
+      if (!rowEl || !rowEl.isConnected) return;
+      const nextHeight = Math.round(rowEl.getBoundingClientRect().height || rowEl.offsetHeight);
+      if (nextHeight > 0) {
+        virtualizer.resizeItem(index, nextHeight);
+      }
+    },
+    [virtualizer],
+  );
 
   const scrollToBottom = useCallback(
     (smooth = false) => {
@@ -119,15 +139,24 @@ export function ThreadView({
         rafScrollRef.current = null;
         isAutoScrollingRef.current = true;
         if (turns.length > 0) {
-          virtualizer.scrollToIndex(turns.length - 1, {
-            align: 'end',
+          const lastIdx = turns.length - 1;
+          const vItems = virtualizer.getVirtualItems();
+          const lastRendered = vItems.some((item) => item.index === lastIdx);
+          if (!lastRendered) {
+            virtualizer.scrollToIndex(lastIdx, {
+              align: 'end',
+              behavior: smooth ? 'smooth' : 'auto',
+            });
+          }
+        }
+        if (typeof el.scrollTo === 'function') {
+          el.scrollTo({
+            top: el.scrollHeight,
             behavior: smooth ? 'smooth' : 'auto',
           });
+        } else {
+          el.scrollTop = el.scrollHeight;
         }
-        el.scrollTo({
-          top: el.scrollHeight,
-          behavior: smooth ? 'smooth' : 'auto',
-        });
         requestAnimationFrame(() => {
           isAutoScrollingRef.current = false;
         });
@@ -433,6 +462,7 @@ export function ThreadView({
           >
             {virtualizer.getVirtualItems().map((vRow) => {
               const turn = turns[vRow.index];
+              if (!turn) return null;
               const isLastAssistant =
                 vRow.index === turns.length - 1 && turn.role === 'assistant' && isBusy;
               return (
@@ -450,6 +480,7 @@ export function ThreadView({
                 >
                   <TurnItem
                     turn={turn}
+                    turnIndex={vRow.index}
                     isStreaming={isLastAssistant}
                     canUndo={!isBusy}
                     threadStatus={isLastAssistant ? thread.status : undefined}
@@ -464,7 +495,7 @@ export function ThreadView({
                     onSaveGeneratedImage={onSaveGeneratedImage}
                     onCopyGeneratedImage={onCopyGeneratedImage}
                     onReuseImagePrompt={onReuseImagePrompt}
-                    onLayoutChange={() => virtualizer.measure()}
+                    onResizeRow={remeasureRow}
                   />
                 </div>
               );

@@ -84,7 +84,8 @@ import {
 } from '../tools/tool-registry';
 import { runStageBVerification } from '../tools/verify-gate';
 import { runObscuraLookup } from '../tools/web-tools';
-import { LoopGuard } from './loop-guard';
+import { LoopGuard, normalizeGuardPath, type LoopGuardResult } from './loop-guard';
+import { coalesceRangeBatch, TurnReadCache } from './read-cache';
 
 interface ZoneACache {
   systemPrompt: string;
@@ -805,6 +806,7 @@ export class AgentOrchestrator {
     const settings = this.store.getSettings();
     const profile = getEffortProfile(thread.effort);
     const loopGuard = new LoopGuard();
+    const readCache = new TurnReadCache();
 
     const ledger: WorkingMemoryLedger = {
       goal: params.userPrompt.slice(0, 220),
@@ -999,6 +1001,16 @@ export class AgentOrchestrator {
             tokensSavedByAst += slice.tokensSavedApprox;
             ledger.inspectedSymbols.push(`${chip.filePath}::${chip.symbolName}`);
             prefetchedFiles.add(chip.filePath);
+            readCache.recordSymbol({
+              filePath: chip.filePath,
+              symbolName: chip.symbolName,
+              startLine: slice.startLine,
+              endLine: slice.endLine,
+              output: slice.output,
+              source: 'prefetch',
+              stepId: 'prefetch',
+              stepNumber: 0,
+            });
             emitPrefetchTool(
               'read_symbol',
               chip.filePath,
@@ -1020,12 +1032,22 @@ export class AgentOrchestrator {
             const slice = runReadRange(workdir, chip.filePath, start, end);
             prefetchedSlices.push(slice.output);
             tokensSavedByAst += slice.tokensSavedApprox;
-            ledger.inspectedSymbols.push(`${chip.filePath}:L${start}-${end}`);
+            ledger.inspectedSymbols.push(`${chip.filePath}:L${slice.startLine}-${slice.endLine}`);
             prefetchedFiles.add(chip.filePath);
+            readCache.recordRange({
+              filePath: chip.filePath,
+              startLine: slice.startLine,
+              endLine: slice.endLine,
+              totalLines: slice.totalLines,
+              output: slice.output,
+              source: 'prefetch',
+              stepId: 'prefetch',
+              stepNumber: 0,
+            });
             emitPrefetchTool(
               'read_range',
               chip.filePath,
-              `${chip.filePath} L${start}-${end}`,
+              `${chip.filePath} L${slice.startLine}-${slice.endLine}`,
               slice.output,
               Date.now() - tRead,
             );
@@ -1044,12 +1066,22 @@ export class AgentOrchestrator {
           const slice = runReadRange(workdir, seedPath, 1, endLine);
           prefetchedSlices.push(slice.output);
           tokensSavedByAst += slice.tokensSavedApprox;
-          ledger.inspectedSymbols.push(`${seedPath}:L1-${endLine}`);
+          ledger.inspectedSymbols.push(`${seedPath}:L${slice.startLine}-${slice.endLine}`);
           prefetchedFiles.add(seedPath);
+          readCache.recordRange({
+            filePath: seedPath,
+            startLine: slice.startLine,
+            endLine: slice.endLine,
+            totalLines: slice.totalLines,
+            output: slice.output,
+            source: 'prefetch',
+            stepId: 'prefetch',
+            stepNumber: 0,
+          });
           emitPrefetchTool(
             'read_range',
             seedPath,
-            `${seedPath} L1-${endLine}`,
+            `${seedPath} L${slice.startLine}-${slice.endLine}`,
             slice.output,
             Date.now() - tRead,
           );
@@ -1099,6 +1131,16 @@ export class AgentOrchestrator {
                 tokensSavedByAst += res.tokensSavedApprox;
                 prefetchedFiles.add(tgt.filePath);
                 ledger.inspectedSymbols.push(`${tgt.filePath}::${tgt.symbolName}`);
+                readCache.recordSymbol({
+                  filePath: tgt.filePath,
+                  symbolName: tgt.symbolName,
+                  startLine: res.startLine,
+                  endLine: res.endLine,
+                  output: res.output,
+                  source: 'prefetch',
+                  stepId: 'prefetch',
+                  stepNumber: 0,
+                });
                 emitPrefetchTool(
                   'read_symbol',
                   tgt.filePath,
@@ -1116,11 +1158,21 @@ export class AgentOrchestrator {
                 prefetchedChars += res.output.length;
                 tokensSavedByAst += res.tokensSavedApprox;
                 prefetchedFiles.add(tgt.filePath);
-                ledger.inspectedSymbols.push(`${tgt.filePath}:L${start}-${end}`);
+                ledger.inspectedSymbols.push(`${tgt.filePath}:L${res.startLine}-${res.endLine}`);
+                readCache.recordRange({
+                  filePath: tgt.filePath,
+                  startLine: res.startLine,
+                  endLine: res.endLine,
+                  totalLines: res.totalLines,
+                  output: res.output,
+                  source: 'prefetch',
+                  stepId: 'prefetch',
+                  stepNumber: 0,
+                });
                 emitPrefetchTool(
                   'read_range',
                   tgt.filePath,
-                  `${tgt.filePath} L${start}-${end}`,
+                  `${tgt.filePath} L${res.startLine}-${res.endLine}`,
                   res.output,
                   Date.now() - tAuto,
                 );
@@ -1213,6 +1265,16 @@ export class AgentOrchestrator {
                 prefetchedSlices.push(res.output);
                 tokensSavedByAst += res.tokensSavedApprox;
                 ledger.inspectedSymbols.push(`${tgt.filePath}::${tgt.symbolName}`);
+                readCache.recordSymbol({
+                  filePath: tgt.filePath,
+                  symbolName: tgt.symbolName,
+                  startLine: res.startLine,
+                  endLine: res.endLine,
+                  output: res.output,
+                  source: 'prefetch',
+                  stepId: 'prefetch',
+                  stepNumber: 0,
+                });
                 loadedTargets.push(`${tgt.filePath}::${tgt.symbolName}`);
               } else {
                 const start = Math.max(1, tgt.startLine ?? 1);
@@ -1220,8 +1282,18 @@ export class AgentOrchestrator {
                 const res = runReadRange(workdir, tgt.filePath, start, end);
                 prefetchedSlices.push(res.output);
                 tokensSavedByAst += res.tokensSavedApprox;
-                ledger.inspectedSymbols.push(`${tgt.filePath}:L${start}-${end}`);
-                loadedTargets.push(`${tgt.filePath}:L${start}-${end}`);
+                ledger.inspectedSymbols.push(`${tgt.filePath}:L${res.startLine}-${res.endLine}`);
+                readCache.recordRange({
+                  filePath: tgt.filePath,
+                  startLine: res.startLine,
+                  endLine: res.endLine,
+                  totalLines: res.totalLines,
+                  output: res.output,
+                  source: 'prefetch',
+                  stepId: 'prefetch',
+                  stepNumber: 0,
+                });
+                loadedTargets.push(`${tgt.filePath}:L${res.startLine}-${res.endLine}`);
               }
             } catch {
               // Ignore hallucinated scout path safely
@@ -1328,10 +1400,9 @@ export class AgentOrchestrator {
       let anyColdReload = false;
       let stepCount = 0;
 
-      const maxTurnSteps = profile.maxMainSteps;
       const tThink = Date.now();
 
-      while (!ac.signal.aborted && stepCount < maxTurnSteps) {
+      while (!ac.signal.aborted) {
         stepCount += 1;
 
         // Drain mid-turn steering notes at the message tail so prefix KV cache stays intact
@@ -1352,6 +1423,7 @@ export class AgentOrchestrator {
         });
 
         loopGuard.invalidateFoldedReads(packed.foldedReadCalls);
+        readCache.markFolded(packed.foldedReadCalls);
         activeContextTokens = packed.activeContextTokens;
         tokensSavedByFolding = packed.tokensSavedByFolding;
 
@@ -1603,17 +1675,19 @@ export class AgentOrchestrator {
               cursor += 1;
             }
 
-            const prepared = batch.map((tc) => {
-              const guard = loopGuard.recordToolAttempt(tc.name, tc.arguments);
+            const batchPlan = coalesceRangeBatch(batch);
+            const prepared = batch.map((tc, idx) => {
+              const merged = batchPlan.mergedRanges.get(idx);
+              const effectiveArgs = merged ? { ...tc.arguments, ...merged } : tc.arguments;
               const logEntry: ToolCallLog = {
                 id: randomUUID(),
                 toolName: tc.name,
-                summary: summarizeToolArgs(tc.name, tc.arguments),
-                argsPreview: JSON.stringify(tc.arguments).slice(0, 140),
+                summary: summarizeToolArgs(tc.name, effectiveArgs),
+                argsPreview: JSON.stringify(effectiveArgs).slice(0, 140),
                 status: 'running',
                 filePath:
-                  typeof tc.arguments.filePath === 'string'
-                    ? tc.arguments.filePath
+                  typeof effectiveArgs.filePath === 'string'
+                    ? effectiveArgs.filePath
                     : undefined,
               };
               toolLogs.push(logEntry);
@@ -1623,32 +1697,142 @@ export class AgentOrchestrator {
                 turnId: assistantTurn.id,
                 tool: logEntry,
               });
-              return { tc, guard, logEntry, startedAt: Date.now() };
+              return { tc, effectiveArgs, logEntry, startedAt: Date.now(), idx };
             });
 
-            const batchResults = await Promise.all(
-              prepared.map(async (item) => {
-                if (item.guard.action === 'halt' || item.guard.action === 'pivot') {
-                  return { kind: 'guard' as const, item };
+            type BatchItem = (typeof prepared)[number];
+            type BatchOutcome =
+              | { kind: 'guard'; item: BatchItem; guard: LoopGuardResult }
+              | {
+                  kind: 'cached';
+                  item: BatchItem;
+                  output: string;
+                  isReadOnlySlice: boolean;
+                  summary?: string;
                 }
-                try {
-                  const execResult = await this.executeTool({
-                    thread,
-                    assistantTurnId: assistantTurn.id,
-                    projectRoot: params.projectRoot,
-                    workdir,
-                    index,
-                    mcpServers,
-                    toolName: item.tc.name,
-                    args: item.tc.arguments,
-                    ledger,
-                    loopGuard,
-                    logEntry: item.logEntry,
-                    signal: ac.signal,
-                  });
-                  return { kind: 'ok' as const, item, execResult };
-                } catch (error) {
-                  return { kind: 'err' as const, item, error };
+              | {
+                  kind: 'ok';
+                  item: BatchItem;
+                  execResult: Awaited<ReturnType<AgentOrchestrator['executeTool']>>;
+                }
+              | { kind: 'err'; item: BatchItem; error: unknown };
+
+            const batchResults: BatchOutcome[] = new Array(prepared.length);
+            const lanes = new Map<string, BatchItem[]>();
+            for (const item of prepared) {
+              const isFileSlice =
+                item.tc.name === 'read_range' || item.tc.name === 'read_symbol';
+              const rawPath =
+                isFileSlice && typeof item.effectiveArgs.filePath === 'string'
+                  ? normalizeGuardPath(item.effectiveArgs.filePath)
+                  : '';
+              const laneKey = rawPath ? `file:${rawPath}` : `idx:${item.idx}`;
+              const lane = lanes.get(laneKey) ?? [];
+              lane.push(item);
+              lanes.set(laneKey, lane);
+            }
+
+            const runBatchItem = async (item: BatchItem): Promise<BatchOutcome> => {
+              const { tc, effectiveArgs, logEntry, idx } = item;
+              const primaryIdx = batchPlan.mergedInto.get(idx);
+              if (primaryIdx !== undefined) {
+                const primaryItem = prepared[primaryIdx];
+                return {
+                  kind: 'cached',
+                  item,
+                  output: `Merged with parallel read_range(${primaryItem.logEntry.summary}) in this step; use those line:hash anchors directly.`,
+                  isReadOnlySlice: false,
+                };
+              }
+
+              const filePath =
+                typeof effectiveArgs.filePath === 'string' ? effectiveArgs.filePath : '';
+
+              if ((tc.name === 'read_range' || tc.name === 'read_symbol') && filePath) {
+                const lookup =
+                  tc.name === 'read_range'
+                    ? readCache.lookupRange(
+                        filePath,
+                        Number(effectiveArgs.startLine ?? 1),
+                        Number(effectiveArgs.endLine ?? Number(effectiveArgs.startLine ?? 1) + 60),
+                        { stepId: stepItem.id, stepNumber: stepCount },
+                      )
+                    : readCache.lookupSymbol(filePath, String(effectiveArgs.symbolName ?? ''), {
+                        stepId: stepItem.id,
+                        stepNumber: stepCount,
+                      });
+
+                if (lookup.hit === 'folded_cached') {
+                  return {
+                    kind: 'cached',
+                    item,
+                    output: lookup.output,
+                    isReadOnlySlice: true,
+                    summary:
+                      tc.name === 'read_range'
+                        ? `${filePath} L${lookup.coveredStart}-${lookup.coveredEnd}`
+                        : undefined,
+                  };
+                }
+                if (lookup.hit === 'in_context') {
+                  const guard = loopGuard.recordInContextReadHit(
+                    tc.name,
+                    filePath,
+                    lookup.pointer,
+                  );
+                  if (guard.action === 'halt') {
+                    return { kind: 'guard', item, guard };
+                  }
+                  return {
+                    kind: 'cached',
+                    item,
+                    output: lookup.pointer,
+                    isReadOnlySlice: false,
+                  };
+                }
+              }
+
+              const guard = loopGuard.recordToolAttempt(tc.name, effectiveArgs);
+              if (guard.action === 'halt' || guard.action === 'pivot') {
+                return { kind: 'guard', item, guard };
+              }
+              if (guard.action === 'dedup') {
+                return {
+                  kind: 'cached',
+                  item,
+                  output: guard.reason ?? 'Already inspected in this unchanged workspace state.',
+                  isReadOnlySlice: false,
+                };
+              }
+
+              try {
+                const execResult = await this.executeTool({
+                  thread,
+                  assistantTurnId: assistantTurn.id,
+                  projectRoot: params.projectRoot,
+                  workdir,
+                  index,
+                  mcpServers,
+                  toolName: tc.name,
+                  args: effectiveArgs,
+                  ledger,
+                  loopGuard,
+                  readCache,
+                  stepId: stepItem.id,
+                  stepNumber: stepCount,
+                  logEntry,
+                  signal: ac.signal,
+                });
+                return { kind: 'ok', item, execResult };
+              } catch (error) {
+                return { kind: 'err', item, error };
+              }
+            };
+
+            await Promise.all(
+              [...lanes.values()].map(async (laneItems) => {
+                for (const item of laneItems) {
+                  batchResults[item.idx] = await runBatchItem(item);
                 }
               }),
             );
@@ -1672,8 +1856,26 @@ export class AgentOrchestrator {
 
             for (let idx = 0; idx < batchResults.length; idx++) {
               const res = batchResults[idx];
-              const { tc, guard, logEntry, startedAt } = res.item;
-              if (res.kind === 'guard') {
+              const { tc, effectiveArgs, logEntry, startedAt } = res.item;
+              if (res.kind === 'cached') {
+                if (res.summary) logEntry.summary = res.summary;
+                logEntry.status = 'ok';
+                logEntry.durationMs = Date.now() - startedAt;
+                logEntry.resultPreview = res.output.slice(0, 200);
+                this.emit({
+                  type: 'tool_update',
+                  threadId: thread.id,
+                  turnId: assistantTurn.id,
+                  tool: { ...logEntry },
+                });
+                stepItem.toolCalls.push({
+                  name: tc.name,
+                  arguments: effectiveArgs,
+                  result: res.output,
+                  isReadOnlySlice: res.isReadOnlySlice,
+                });
+              } else if (res.kind === 'guard') {
+                const { guard } = res;
                 stepHadError = true;
                 logEntry.status = 'error';
                 logEntry.resultPreview = guard.reason;
@@ -1691,7 +1893,7 @@ export class AgentOrchestrator {
                 }
                 stepItem.toolCalls.push({
                   name: tc.name,
-                  arguments: tc.arguments,
+                  arguments: effectiveArgs,
                   result: guard.reason ?? 'Pivot required.',
                 });
               } else if (res.kind === 'err') {
@@ -1709,13 +1911,13 @@ export class AgentOrchestrator {
                   tool: { ...logEntry },
                 });
                 const outcomeCheck = loopGuard.recordOutcome(
-                  `${tc.name}:${typeof tc.arguments.filePath === 'string' ? tc.arguments.filePath : ''}`,
+                  `${tc.name}:${typeof effectiveArgs.filePath === 'string' ? effectiveArgs.filePath : ''}`,
                   true,
                   errMsg,
                 );
                 stepItem.toolCalls.push({
                   name: tc.name,
-                  arguments: tc.arguments,
+                  arguments: effectiveArgs,
                   result: `Tool error: ${errMsg}`,
                 });
                 if (outcomeCheck.action === 'halt') {
@@ -1748,7 +1950,7 @@ export class AgentOrchestrator {
                 );
                 stepItem.toolCalls.push({
                   name: tc.name,
-                  arguments: tc.arguments,
+                  arguments: effectiveArgs,
                   result: execResult.output,
                   isReadOnlySlice: execResult.isReadOnlySlice,
                 });
@@ -1857,6 +2059,24 @@ export class AgentOrchestrator {
             break;
           }
 
+          if (guard.action === 'dedup') {
+            logEntry.status = 'ok';
+            logEntry.resultPreview = guard.reason;
+            logEntry.durationMs = Date.now() - tTool;
+            this.emit({
+              type: 'tool_update',
+              threadId: thread.id,
+              turnId: assistantTurn.id,
+              tool: { ...logEntry },
+            });
+            stepItem.toolCalls.push({
+              name: tc.name,
+              arguments: tc.arguments,
+              result: guard.reason ?? 'Already inspected in this unchanged workspace state.',
+            });
+            continue;
+          }
+
           if (guard.action === 'pivot') {
             stepHadError = true;
             logEntry.status = 'error';
@@ -1888,6 +2108,9 @@ export class AgentOrchestrator {
               args: tc.arguments,
               ledger,
               loopGuard,
+              readCache,
+              stepId: stepItem.id,
+              stepNumber: stepCount,
               logEntry,
               signal: ac.signal,
             });
@@ -2017,9 +2240,7 @@ export class AgentOrchestrator {
       if (!finalAnswer) {
         finalAnswer = ac.signal.aborted
           ? 'Turn stopped by user.'
-          : stepCount >= maxTurnSteps
-            ? `Reached maximum turn step limit (${maxTurnSteps}). Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`
-            : `Completed ${stepCount} steps. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
+          : `Completed ${stepCount} steps. Modified: ${ledger.modifiedFiles.join(', ') || 'none'}.`;
       }
 
       // ================================================================
@@ -2293,6 +2514,7 @@ export class AgentOrchestrator {
     index: RepoIndex;
     ledger: WorkingMemoryLedger;
     loopGuard: LoopGuard;
+    readCache: TurnReadCache;
     relPath: string;
     absPath: string;
     inside: boolean;
@@ -2303,6 +2525,7 @@ export class AgentOrchestrator {
       params.ledger.modifiedFiles.push(params.relPath);
     }
     params.loopGuard.invalidateOnMutation(params.relPath);
+    params.readCache.invalidate(params.relPath);
     if (params.trackChurn) {
       params.loopGuard.recordAppliedEdit(params.relPath);
     }
@@ -2331,6 +2554,9 @@ export class AgentOrchestrator {
     args: Record<string, unknown>;
     ledger: WorkingMemoryLedger;
     loopGuard: LoopGuard;
+    readCache: TurnReadCache;
+    stepId: string;
+    stepNumber: number;
     logEntry: ToolCallLog;
     signal: AbortSignal;
   }): Promise<{
@@ -2357,6 +2583,9 @@ export class AgentOrchestrator {
       args,
       ledger,
       loopGuard,
+      readCache,
+      stepId,
+      stepNumber,
       logEntry,
     } = params;
 
@@ -2578,6 +2807,7 @@ export class AgentOrchestrator {
         companionFiles,
       });
       loopGuard.invalidateOnMutation(saved.sourcePath);
+      readCache.invalidate(saved.sourcePath);
       const updatedSkills = discoverSkills(projectRoot);
       this.emit({
         type: 'skills_updated',
@@ -2661,7 +2891,6 @@ export class AgentOrchestrator {
       const res = await runObscuraLookup({
         url: args.url ? String(args.url) : undefined,
         query: args.query ? String(args.query) : undefined,
-        obscuraPath: settings.obscuraPath,
         signal: params.signal,
       });
       return {
@@ -2738,6 +2967,7 @@ export class AgentOrchestrator {
           copyFileSync(result.image.filePath, resolvedTarget.absPath);
           savedRel = resolvedTarget.relPath;
           loopGuard.invalidateOnMutation(resolvedTarget.relPath);
+          readCache.invalidate(resolvedTarget.relPath);
           this.indexer.markDirty(workdir, resolvedTarget.relPath, false);
           if (!ledger.modifiedFiles.includes(resolvedTarget.relPath)) {
             ledger.modifiedFiles.push(resolvedTarget.relPath);
@@ -2772,6 +3002,16 @@ export class AgentOrchestrator {
       const res = runReadSymbol(index, this.indexer, filePath, symbolName);
       ledger.inspectedSymbols.push(`${filePath}::${symbolName}`);
       loopGuard.recordReadRefresh(filePath);
+      readCache.recordSymbol({
+        filePath,
+        symbolName,
+        startLine: res.startLine,
+        endLine: res.endLine,
+        output: res.output,
+        source: 'tool',
+        stepId,
+        stepNumber,
+      });
       return {
         output: res.output,
         isReadOnlySlice: true,
@@ -2785,8 +3025,19 @@ export class AgentOrchestrator {
       const startLine = Number(args.startLine ?? 1);
       const endLine = Number(args.endLine ?? startLine + 60);
       const res = runReadRange(workdir, filePath, startLine, endLine);
-      ledger.inspectedSymbols.push(`${filePath}:L${startLine}-${endLine}`);
+      ledger.inspectedSymbols.push(`${filePath}:L${res.startLine}-${res.endLine}`);
       loopGuard.recordReadRefresh(filePath);
+      readCache.recordRange({
+        filePath,
+        startLine: res.startLine,
+        endLine: res.endLine,
+        totalLines: res.totalLines,
+        output: res.output,
+        source: 'tool',
+        stepId,
+        stepNumber,
+      });
+      logEntry.summary = `${filePath} L${res.startLine}-${res.endLine}`;
       return {
         output: res.output,
         isReadOnlySlice: true,
@@ -2821,6 +3072,7 @@ export class AgentOrchestrator {
           index,
           ledger,
           loopGuard,
+          readCache,
           relPath: res.relPath,
           absPath: res.absPath,
           inside: res.inside,
@@ -2878,6 +3130,7 @@ export class AgentOrchestrator {
           index,
           ledger,
           loopGuard,
+          readCache,
           relPath: res.relPath,
           absPath: res.absPath,
           inside: res.inside,
@@ -2942,6 +3195,7 @@ export class AgentOrchestrator {
           index,
           ledger,
           loopGuard,
+          readCache,
           relPath: res.relPath,
           absPath: res.absPath,
           inside: res.inside,
@@ -2986,6 +3240,7 @@ export class AgentOrchestrator {
           index,
           ledger,
           loopGuard,
+          readCache,
           relPath: res.relPath,
           absPath: res.absPath,
           inside: res.inside,
@@ -3022,6 +3277,7 @@ export class AgentOrchestrator {
         ledger.modifiedFiles.push(res.relPath);
       }
       loopGuard.invalidateOnMutation(res.relPath);
+      readCache.invalidate(res.relPath);
       if (res.inside) {
         this.indexer.markDirty(workdir, res.relPath, true);
         index.files.delete(res.relPath);
@@ -3058,6 +3314,8 @@ export class AgentOrchestrator {
         ledger.modifiedFiles.push(res.toRel);
       }
       loopGuard.invalidateOnMutation(res.toRel);
+      readCache.invalidate(res.fromRel);
+      readCache.invalidate(res.toRel);
       const movedEntry = res.fromInside ? index.files.get(res.fromRel) : undefined;
       if (res.fromInside) {
         this.indexer.markDirty(workdir, res.fromRel, true);

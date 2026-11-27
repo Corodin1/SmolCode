@@ -1,9 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   extractSearchResultUrls,
+  getObscuraStorageDir,
+  isBundledObscuraPath,
   resolveObscuraBinary,
   runObscuraLookup,
 } from '../../electron/tools/web-tools';
@@ -30,6 +32,16 @@ describe('Obscura web_lookup tool', () => {
       'https://docs.ollama.com/api/chat',
       'https://modelcontextprotocol.io/specification/2025-03-26/basic/transports',
     ]);
+  });
+
+  it('detects the bundled Obscura browser inside the project automatically', () => {
+    const bin = resolveObscuraBinary();
+    expect(bin).toBeTruthy();
+    expect(existsSync(bin!)).toBe(true);
+    expect(isBundledObscuraPath(bin)).toBe(true);
+
+    const storageDir = getObscuraStorageDir();
+    expect(existsSync(storageDir)).toBe(true);
   });
 
   it('rejects unsupported URL schemes and uses configured Obscura binary', async () => {

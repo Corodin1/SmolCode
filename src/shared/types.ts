@@ -394,7 +394,6 @@ export interface AppSettings {
   sttModel: string;
   showAdvancedDualModel: boolean;
   webLookupEnabled: boolean;
-  obscuraPath: string;
   imageGenProvider: ImageGenProvider;
   sdCppPath: string;
   sdCppModelPath: string;

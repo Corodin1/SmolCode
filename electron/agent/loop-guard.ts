@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export interface LoopGuardResult {
-  action: 'allow' | 'pivot' | 'halt';
+  action: 'allow' | 'dedup' | 'pivot' | 'halt';
   reason?: string;
 }
 
@@ -59,6 +59,7 @@ export class LoopGuard {
   private fileEditChurn = new Map<string, number>();
   private churnBlocksWithoutRead = new Map<string, number>();
   private invalidatedFoldKeys = new Set<string>();
+  private readDedupCounts = new Map<string, number>();
   private mutationEpoch = 0;
 
   getMutationEpoch(): number {
@@ -148,10 +149,10 @@ export class LoopGuard {
     const isReadOnly = READ_ONLY_LOOP_TOOLS.has(toolName);
     const isMutating = MUTATING_LOOP_TOOLS.has(toolName);
 
-    if (nextCount === 2) {
+    if (nextCount === 2 || (isReadOnly && nextCount === 3)) {
       if (isReadOnly) {
         return {
-          action: 'pivot',
+          action: 'dedup',
           reason: `LoopGuard: "${toolName}" was already called on this unchanged workspace state. Act on what you already read (e.g. <replace_symbol>/<file_write>/patch_hashline) or inspect a different symbol/line range.`,
         };
       }
@@ -173,7 +174,7 @@ export class LoopGuard {
       };
     }
 
-    if (nextCount >= 3) {
+    if ((isReadOnly && nextCount >= 4) || (!isReadOnly && nextCount >= 3)) {
       const hint = isReadOnly
         ? 'Repeated identical inspection without progress.'
         : isMutating
@@ -205,6 +206,24 @@ export class LoopGuard {
     }
 
     return { action: 'allow' };
+  }
+
+  /**
+   * Tracks redundant in-context read hits on the same file within the current mutationEpoch
+   * (e.g., nibbling sub-ranges of a file already loaded in context) and halts only if stuck.
+   */
+  recordInContextReadHit(toolName: string, filePath: string, pointer: string): LoopGuardResult {
+    const norm = normalizeGuardPath(filePath);
+    const key = `e${this.mutationEpoch}:${norm}`;
+    const count = (this.readDedupCounts.get(key) ?? 0) + 1;
+    this.readDedupCounts.set(key, count);
+    if (count >= 6) {
+      return {
+        action: 'halt',
+        reason: `Stopped repeated "${toolName}" on "${norm}" (${count}x redundant reads without editing): ${pointer}`,
+      };
+    }
+    return { action: 'dedup', reason: pointer };
   }
 
   recordOutcome(key: string, isError: boolean, errorText?: string): LoopGuardResult {

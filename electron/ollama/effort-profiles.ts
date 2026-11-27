@@ -8,7 +8,6 @@ export interface EffortProfile {
   mainThink: boolean;
   numCtx: number;
   numPredict: number;
-  maxMainSteps: number;
   stepTimeoutMs: number;
   verifyTimeoutMs: number;
   runFastScout: boolean;
@@ -26,7 +25,6 @@ export const EFFORT_PROFILES: Record<EffortLevel, EffortProfile> = {
     mainThink: false,
     numCtx: 8192,
     numPredict: 2048,
-    maxMainSteps: 10,
     stepTimeoutMs: 90_000,
     verifyTimeoutMs: 45_000,
     runFastScout: false,
@@ -53,7 +51,6 @@ export const EFFORT_PROFILES: Record<EffortLevel, EffortProfile> = {
     mainThink: true,
     numCtx: 12288,
     numPredict: 3072,
-    maxMainSteps: 18,
     stepTimeoutMs: 150_000,
     verifyTimeoutMs: 90_000,
     runFastScout: true,
@@ -79,7 +76,6 @@ export const EFFORT_PROFILES: Record<EffortLevel, EffortProfile> = {
     mainThink: true,
     numCtx: 16384,
     numPredict: 4608,
-    maxMainSteps: 24,
     stepTimeoutMs: 180_000,
     verifyTimeoutMs: 120_000,
     runFastScout: true,
@@ -105,7 +101,6 @@ export const EFFORT_PROFILES: Record<EffortLevel, EffortProfile> = {
     mainThink: true,
     numCtx: 24576,
     numPredict: 8192,
-    maxMainSteps: 32,
     stepTimeoutMs: 240_000,
     verifyTimeoutMs: 180_000,
     runFastScout: true,
